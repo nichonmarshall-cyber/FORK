@@ -94,7 +94,6 @@ Projects:
 fork/
 ├── README.md
 ├── ARCHITECTURE.md
-├── PROJECT_ROADMAP.md
 ├── frontend/
 ├── backend/
 │   ├── app/
@@ -105,10 +104,6 @@ fork/
 │   └── data_sources/
 └── docs/
 ```
-
-### longterma goal
-
-The long-term goal is a platform universities could adopt as a student advising companion — not a replacement for advisors, but a tool that lets students walk into an advising meeting already understanding the financial and academic consequences of the decision on the table. See PROJECT_ROADMAP.md.
 
 ## Status
 
