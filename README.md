@@ -104,3 +104,11 @@ fork/
 │   │   └── graduate_now_vs_stay/
 │   └── data_sources/
 └── docs/
+
+## Long-Term Vision
+
+The long-term goal is a platform universities could adopt as a student advising companion — not a replacement for advisors, but a tool that lets students walk into an advising meeting already understanding the financial and academic consequences of the decision on the table. See PROJECT_ROADMAP.md.
+
+## Status
+
+Pre-implementation. This repository currently contains planning documentation only.
