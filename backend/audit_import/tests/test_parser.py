@@ -9,7 +9,7 @@ SAMPLE_PATH = os.path.join(os.path.dirname(__file__), "sample_audit.txt")
 
 @pytest.fixture
 def sample_text():
-    with open(SAMPLE_PATH) as f:
+    with open(SAMPLE_PATH, encoding="utf-8") as f:
         return f.read()
 
 

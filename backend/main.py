@@ -45,7 +45,7 @@ def _load_reference_data() -> dict:
     # Re-read per request on purpose. The file is small, and it means a
     # number can be corrected mid-demo without restarting the server. Worth
     # caching once the file gets large enough for the I/O to matter.
-    with open(_DATA_PATH) as f:
+     with open(_DATA_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 

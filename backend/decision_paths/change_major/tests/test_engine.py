@@ -13,7 +13,7 @@ REFERENCE_DATA_PATH = os.path.join(
 
 @pytest.fixture
 def reference_data():
-    with open(REFERENCE_DATA_PATH) as f:
+    with open(REFERENCE_DATA_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
