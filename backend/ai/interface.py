@@ -1,18 +1,15 @@
 """
-The AI Interface Layer. This is the ONLY module in the backend that talks
-to an LLM provider. Nothing outside this file knows or cares which
-provider is behind it — see ARCHITECTURE.md, "The AI Interface Layer."
+The only module here that talks to an LLM. Nothing else imports anthropic.
 
-Two responsibilities, and only two:
-  1. extract_inputs()  — conversation -> structured inputs (or a request
-     for more information). Never guesses a number; if a value isn't in
-     the conversation, it's reported missing, not invented.
-  2. explain_results() — structured result -> plain-language narration.
-     The prompt receives ONLY the result object, so it cannot introduce
-     any number that didn't come from the engine.
+Two responsibilities:
+  1. extract_inputs()  — read what someone wrote and pull out the fields.
+     If a value isn't there, report it missing rather than inventing it.
+  2. explain_results() — take the finished numbers and write them up in
+     plain language. Only receives the result object, so it can't reference
+     a figure that didn't come out of the engine.
 
-Requires ANTHROPIC_API_KEY in the environment. Swap providers by editing
-_call_model() only — nothing else in the codebase should change.
+Requires ANTHROPIC_API_KEY in the environment (.env works). Switching
+providers means editing _call_model() and nothing else.
 """
 
 import json
@@ -41,8 +38,8 @@ def _get_client() -> anthropic.Anthropic:
 
 
 def _call_model(system: str, user_message: str, max_tokens: int = 1024) -> str:
-    """The single choke point for all LLM calls. Swapping providers means
-    editing this function and nothing else."""
+    """Every LLM call goes through here, so switching providers means
+    changing this one function."""
     client = _get_client()
     response = client.messages.create(
         model=_MODEL,
@@ -79,8 +76,8 @@ credits transfer, that field is null; never assume all or none transfer."""
 
 
 def extract_inputs(conversation_text: str) -> ChangeMajorInputs:
-    """Raises MissingInputs if the conversation doesn't yet contain enough
-    information to build a complete, valid ChangeMajorInputs."""
+    """Raises MissingInputs if the message doesn't contain enough yet to
+    build a complete set of valid inputs."""
     raw = _call_model(EXTRACTION_SYSTEM_PROMPT, conversation_text)
 
     try:
@@ -94,8 +91,8 @@ def extract_inputs(conversation_text: str) -> ChangeMajorInputs:
     if missing:
         raise MissingInputs(missing)
 
-    # Pydantic validates types/ranges here; ValueError/ValidationError
-    # propagates up rather than being silently coerced.
+    # Pydantic validates types and ranges here. Let it raise rather than
+    # quietly coercing a bad value into a plausible one.
     return ChangeMajorInputs(
         current_major=parsed["current_major"],
         prospective_major=parsed["prospective_major"],
@@ -114,10 +111,9 @@ should do — describe what the numbers show and let them decide. Keep it to \
 
 
 def explain_results(formatted_result: dict) -> str:
-    """Takes the formatter's output dict — never the raw engine dataclass,
-    never the original conversation — so the AI physically cannot
-    reference anything the student said that isn't already a validated
-    number in the result."""
+    """Receives only the formatter's dict — not the engine objects, not the
+    original message. So it has no way to reference something the student
+    said that didn't become a validated number."""
     user_message = json.dumps(formatted_result)
     explanation = _call_model(EXPLANATION_SYSTEM_PROMPT, user_message, max_tokens=400)
     _verify_no_invented_numbers(explanation, formatted_result)
@@ -125,14 +121,15 @@ def explain_results(formatted_result: dict) -> str:
 
 
 def _verify_no_invented_numbers(explanation: str, formatted_result: dict) -> None:
-    """Best-effort guardrail: every line-item value should be traceable.
-    This does not parse every number in prose (that's a harder NLP
-    problem) but is the hook where a stricter regex/number-extraction
-    check belongs before this ships. Documented here deliberately so the
-    gap is visible rather than silently assumed away."""
-    # TODO before demo: extract all numeric tokens from `explanation` and
-    # assert each one matches (within rounding) a value in
-    # formatted_result["line_items"] or formatted_result["summary"].
-    # Left as an explicit stub rather than faked — see ARCHITECTURE.md,
-    # "Guardrails, enforced structurally."
+    """Meant to verify the AI didn't invent a number. Currently doesn't.
+
+    TODO before the demo: extract every numeric token from `explanation`
+    and confirm each one appears somewhere in formatted_result, within
+    rounding. Regenerate the explanation if any don't.
+
+    Left as a visible stub rather than quietly removed, because "the AI
+    can't fabricate a number" is the core claim of this project and right
+    now it's enforced by the prompt asking, not by code checking. Known
+    gap, documented on purpose.
+    """
     pass
