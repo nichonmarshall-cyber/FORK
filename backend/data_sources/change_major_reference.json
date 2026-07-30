@@ -1,57 +1,66 @@
 {
-  "_README": "PLACEHOLDER DATA. Every figure below is illustrative, not sourced. Before this project is demoed or submitted, replace these with real numbers: (1) tuition_per_semester from your university's published tuition/fee schedule, (2) median_starting_salary from College Scorecard (collegescorecard.ed.gov) filtered by institution + field of study, (3) credits_required from your university's degree catalog. Keep the 'source' and 'source_date' fields populated for every value you replace — the provenance panel in the UI reads directly from this file.",
-
+  "_README": "PLACEHOLDER DATA. Every figure below is illustrative, not sourced. Before this project is demoed or submitted, replace these with real numbers: (1) tuition_per_credit_hour from your university's published tuition/fee schedule, (2) median_starting_salary from College Scorecard (collegescorecard.ed.gov) filtered by institution + field of study, (3) credits_required from your university's degree catalog. Each figure has its OWN source/source_date pair because they come from different documents — the provenance panel reads these directly, so a credit requirement must not cite a salary dataset.",
   "institution": {
     "name": "REPLACE_WITH_YOUR_UNIVERSITY",
-    "tuition_per_credit_hour": 300.00,
-    "source": "PLACEHOLDER — add with university tuition schedule URL",
+    "tuition_per_credit_hour": 300.0,
+    "source": "PLACEHOLDER — replace with university tuition schedule URL",
     "source_date": "PLACEHOLDER"
   },
-
   "majors": {
     "computer_science": {
       "display_name": "Computer Science",
       "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 75000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     },
     "information_technology": {
       "display_name": "Information Technology",
       "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 62000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     },
     "business_administration": {
       "display_name": "Business Administration",
       "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 55000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     },
     "psychology": {
       "display_name": "Psychology",
       "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 45000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     },
     "nursing": {
       "display_name": "Nursing (BSN)",
       "credits_required": 128,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 68000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     },
     "mechanical_engineering": {
       "display_name": "Mechanical Engineering",
       "credits_required": 128,
+      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
       "median_starting_salary": 72000,
-      "source": "PLACEHOLDER — add with College Scorecard field-of-study earnings for this institution",
-      "source_date": "PLACEHOLDER"
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
     }
   },
-
   "credits_per_semester_full_time": 15
 }
