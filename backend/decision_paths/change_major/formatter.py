@@ -9,7 +9,7 @@ The output shape here IS the "Why am I seeing this?" panel: every field in
 attached it. The formatter does not add or remove provenance, only shapes it.
 """
 
-from .engine import ChangeMajorResult
+from .tests.engine import ChangeMajorResult
 
 
 def format_result(result: ChangeMajorResult) -> dict:

@@ -13,7 +13,7 @@ change belongs in a different module, not here.
 
 from dataclasses import dataclass, field
 
-from .inputs import ChangeMajorInputs
+from ..inputs import ChangeMajorInputs
 
 
 @dataclass
