@@ -35,7 +35,7 @@ export default function NodePanel({ node, result, onClose }: Props) {
 
   if (!node) {
     return (
-      <aside className="flex h-full flex-col justify-center rounded-2xl border border-white/[0.07] bg-[#0a0e17] p-8 text-center">
+      <aside className="flex h-full max-h-[calc(100vh-2rem)] flex-col justify-center rounded-2xl border border-white/[0.07] bg-[#0a0e17] p-8 text-center">
         <p className="text-sm leading-relaxed text-slate-500">
           Select any node on the map to see what it means, where its number
           came from, and what it assumes.
@@ -49,7 +49,15 @@ export default function NodePanel({ node, result, onClose }: Props) {
   const tone = STATE_TONE[r.state];
 
   return (
-    <aside className="flex h-full flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0a0e17]">
+    // max-h caps this panel at the viewport height (minus page.tsx's p-4
+    // padding, 2rem total) instead of letting it grow with content. That's
+    // the actual fix for "expanding Why am I seeing this? makes the whole
+    // page huge": h-full alone does nothing when the parent grid row has no
+    // fixed height, since the row just grows to match whichever column's
+    // content is tallest. With a hard cap here, the extra content scrolls
+    // inside overflow-y-auto below instead of stretching the row — the map
+    // and scenario columns never move when a section expands.
+    <aside className="flex h-full max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0a0e17]">
       <header className="flex items-start justify-between gap-3 border-b border-white/[0.07] px-5 py-4">
         <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
           Node details
@@ -63,7 +71,7 @@ export default function NodePanel({ node, result, onClose }: Props) {
         </button>
       </header>
 
-      <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+      <div className="themed-scroll flex-1 space-y-6 overflow-y-auto px-5 py-5">
         <div className="flex items-start gap-3.5">
           <span
             className="mt-0.5 h-9 w-9 shrink-0 rounded-full border-2"

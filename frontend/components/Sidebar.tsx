@@ -36,19 +36,21 @@ export default function Sidebar({ result }: { result: CalcResult | null }) {
 
   return (
     <nav className="flex h-full flex-col gap-6 rounded-2xl border border-white/[0.07] bg-[#0a0e17] px-4 py-5">
-      <div className="flex items-center gap-2.5 px-1">
-        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
-          <path
-            d="M12 22V13 M12 13 L5 5 M12 13 L19 5"
-            fill="none"
-            stroke="#22d3ee"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-        </svg>
-        <span className="text-[15px] font-semibold tracking-[0.22em] text-slate-100">
-          FORK
-        </span>
+      <div className="flex items-center pb-0.5 pl-1 pr-1 pt-1">
+        {/* The supplied asset is the full lockup — glyph AND the "FORK"
+            wordmark — so there's deliberately no separate text span here.
+            It's a real transparent PNG, which is what fixes the faint
+            rectangular edge the earlier JPEG showed against this panel's
+            background. Height is set and width left auto so the aspect
+            ratio can't be squashed. */}
+        {/* eslint-disable-next-line @next/next/no-img-element -- tiny
+            static asset; Next/Image's machinery isn't worth it here */}
+        <img
+          src="/fork-logo.png"
+          alt="Fork"
+          className="h-7 w-auto select-none"
+          draggable={false}
+        />
       </div>
 
       <ul className="space-y-0.5">

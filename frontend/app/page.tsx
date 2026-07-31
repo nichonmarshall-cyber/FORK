@@ -10,15 +10,19 @@ import { CalcResult, calculateChangeMajor } from "@/lib/types";
 /**
  * Major keys have to match the reference JSON exactly. Listed here rather
  * than fetched because the backend has no endpoint for them yet — worth
- * adding one so this list can't drift out of sync with the data file.
+ * adding one so this list can't drift out of sync with the data file (it
+ * already has once: this list used to include "psychology", "nursing",
+ * and "mechanical_engineering", which Stage 3's data work turned into a
+ * clarification case, an unsupported case, and a renamed key,
+ * respectively — see backend/decision_paths/change_major/major_resolution.py).
  */
 const MAJORS = [
   { key: "computer_science", label: "Computer Science" },
   { key: "information_technology", label: "Information Technology" },
-  { key: "business_administration", label: "Business Administration" },
-  { key: "psychology", label: "Psychology" },
-  { key: "nursing", label: "Nursing (BSN)" },
-  { key: "mechanical_engineering", label: "Mechanical Engineering" },
+  { key: "business_administration", label: "Business Administration (BBA)" },
+  { key: "psychology_ba", label: "Psychology (B.A.)" },
+  { key: "psychology_bs", label: "Psychology (B.S.)" },
+  { key: "mechanical_energy_engineering", label: "Mechanical & Energy Engineering" },
 ];
 
 const money = (n: number) =>
@@ -61,7 +65,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#05070d] text-slate-200">
-      <div className="mx-auto grid max-w-[1700px] grid-cols-1 gap-4 p-4 xl:grid-cols-[190px_280px_minmax(0,1fr)_355px]">
+      <div className="mx-auto grid max-w-[1840px] grid-cols-1 gap-4 p-4 xl:grid-cols-[172px_250px_minmax(0,1fr)_300px]">
         <div className="hidden xl:block">
           <Sidebar result={result} />
         </div>
