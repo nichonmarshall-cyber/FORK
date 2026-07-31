@@ -100,9 +100,18 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             inputs.prospective_credits_required_source
             or "Student-supplied degree audit"
         )
+        # The date that applies to an override is when THAT figure was
+        # obtained, not whenever the reference table happens to have been
+        # last updated. inputs.credits_source_date is the date attached to
+        # the audit/credits data the student supplied, so it's the correct
+        # date for this line item too. Bug: this used to always cite
+        # prospective["credits_required_source_date"] even when the source
+        # string above came from the override — a mismatched citation.
+        prospective_required_source_date = inputs.credits_source_date
     else:
         prospective_required = float(prospective["credits_required"])
         prospective_required_source = prospective["credits_required_source"]
+        prospective_required_source_date = prospective["credits_required_source_date"]
 
     current_required = float(current["credits_required"])
 
@@ -185,7 +194,7 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             label=f"Credits required — {prospective['display_name']}",
             value=prospective_required,
             source=prospective_required_source,
-            source_date=prospective["credits_required_source_date"],
+            source_date=prospective_required_source_date,
         ),
         credits_counted=LineItem(
             label="Credits that transfer to prospective major",

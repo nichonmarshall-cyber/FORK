@@ -15,7 +15,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from data_loading.loader import build_reference_data
+from data_loading.loader import UnknownInstitution, build_reference_data
 from decision_paths.change_major import engine as change_major_engine
 from decision_paths.change_major.formatter import format_result
 from decision_paths.change_major.inputs import ChangeMajorInputs, MissingInputs
@@ -69,6 +69,10 @@ class ChangeMajorRequest(BaseModel):
     credits_in_progress: int = 0
     prospective_credits_required: int | None = None
     prospective_credits_required_source: str | None = None
+    # Which school's data to calculate against. Defaults to the one
+    # currently-supported institution so every existing caller — the
+    # manual-entry form, direct API tests — keeps working unchanged.
+    institution_id: str = _DEFAULT_INSTITUTION_ID
 
 
 @app.post("/decision-paths/change-major/calculate")
@@ -80,12 +84,22 @@ def calculate_change_major(request: ChangeMajorRequest):
     if the AI layer has trouble during a demo. The conversation endpoint
     also lands here once it has valid inputs.
     """
+    # institution_id selects which data file to calculate against — it's
+    # not an engine input, so it doesn't belong in ChangeMajorInputs. Pulled
+    # out explicitly rather than relying on pydantic's default extra-field
+    # handling, so this stays correct even if that default ever changes.
+    payload = request.model_dump()
+    institution_id = payload.pop("institution_id")
+
     try:
-        inputs = ChangeMajorInputs(**request.model_dump())
+        inputs = ChangeMajorInputs(**payload)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    reference_data = _load_reference_data()
+    try:
+        reference_data = _load_reference_data(institution_id)
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
     try:
         result = change_major_engine.calculate(inputs, reference_data)
@@ -97,6 +111,7 @@ def calculate_change_major(request: ChangeMajorRequest):
 
 class ConversationRequest(BaseModel):
     message: str
+    institution_id: str = _DEFAULT_INSTITUTION_ID
 
 
 @app.post("/decision-paths/change-major/converse")
@@ -117,7 +132,11 @@ def converse_change_major(request: ConversationRequest):
             "missing_fields": e.missing_fields,
         }
 
-    reference_data = _load_reference_data()
+    try:
+        reference_data = _load_reference_data(request.institution_id)
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
     result = change_major_engine.calculate(inputs, reference_data)
     formatted = format_result(result)
     formatted["explanation"] = explain_results(formatted)

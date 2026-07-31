@@ -135,6 +135,51 @@ def test_audit_derived_credits_required_overrides_reference_table(reference_data
     assert result.incremental_tuition.value == 7200.0
 
 
+def test_override_credits_required_date_matches_the_override_not_the_table(reference_data):
+    """Regression test for a provenance bug: an audit-supplied credit
+    override used to cite its own source string but the REFERENCE TABLE's
+    date, producing a citation like 'UNT what-if audit (dated: whenever the
+    JSON was last touched)'. The date shown must belong to the same
+    document as the source string next to it — here, the date the audit
+    was parsed, which the caller supplies via credits_source_date."""
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        prospective_major="information_technology",
+        credits_completed=72,
+        credits_transferable=60,
+        credits_source_date="2026-07-29",
+        prospective_credits_required=132,
+        prospective_credits_required_source="UNT what-if degree audit, run 2026-07-29",
+    )
+    result = calculate(inputs, reference_data)
+
+    assert result.prospective_path.credits_required.source_date == "2026-07-29"
+    # And the table's placeholder date must NOT have leaked through.
+    assert (
+        result.prospective_path.credits_required.source_date
+        != reference_data["majors"]["information_technology"]["credits_required_source_date"]
+    )
+
+
+def test_non_override_credits_required_still_cites_table_date(reference_data):
+    """The fix must not break the ordinary path: without an override, the
+    date shown should still be the reference table's own date, not the
+    student's credits_source_date."""
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        prospective_major="information_technology",
+        credits_completed=72,
+        credits_transferable=60,
+        credits_source_date="2026-07-29",
+    )
+    result = calculate(inputs, reference_data)
+
+    assert (
+        result.prospective_path.credits_required.source_date
+        == reference_data["majors"]["information_technology"]["credits_required_source_date"]
+    )
+
+
 def test_credit_provenance_flows_from_inputs_into_result(reference_data):
     """The result has to distinguish a registrar's figure from a student's
     estimate. If both showed the same source, the provenance panel would be

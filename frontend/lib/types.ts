@@ -46,6 +46,10 @@ export interface CalcRequest {
   credits_transferable_source?: string;
   credits_source_date?: string;
   credits_in_progress?: number;
+  // Which school to calculate against. Optional because the backend
+  // defaults to "unt" when omitted — only send this once there's more
+  // than one supported institution to choose from.
+  institution_id?: string;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
