@@ -1,0 +1,67 @@
+{
+  "_README": "PLACEHOLDER DATA for the University of North Texas. Structure is real, numbers are not. Stage 3 replaces tuition and credits_required with figures from UNT's published tuition schedule and undergraduate catalog, with exact URLs and effective dates. Stage 4 replaces the salary block with College Scorecard field-of-study earnings under an honest metric name. Every figure keeps its OWN source/source_date pair — a credit requirement must never cite a salary dataset.",
+  "institution_id": "unt",
+  "display_name": "University of North Texas",
+  "tuition": {
+    "tuition_per_credit_hour": 300.0,
+    "source": "PLACEHOLDER — replace with UNT tuition and fee schedule URL",
+    "source_date": "PLACEHOLDER"
+  },
+  "credits_per_semester_full_time": 15,
+  "majors": {
+    "computer_science": {
+      "display_name": "Computer Science",
+      "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 75000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    },
+    "information_technology": {
+      "display_name": "Information Technology",
+      "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 62000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    },
+    "business_administration": {
+      "display_name": "Business Administration",
+      "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 55000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    },
+    "psychology": {
+      "display_name": "Psychology",
+      "credits_required": 120,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 45000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    },
+    "nursing": {
+      "display_name": "Nursing (BSN)",
+      "credits_required": 128,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 68000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    },
+    "mechanical_engineering": {
+      "display_name": "Mechanical Engineering",
+      "credits_required": 128,
+      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
+      "credits_required_source_date": "PLACEHOLDER",
+      "median_starting_salary": 72000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER"
+    }
+  }
+}

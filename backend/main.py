@@ -10,13 +10,12 @@ from dotenv import load_dotenv
 load_dotenv()  # load .env so the API key is set before anything below
                # tries to use it
 
-import json
-import os
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from data_loading.loader import build_reference_data
 from decision_paths.change_major import engine as change_major_engine
 from decision_paths.change_major.formatter import format_result
 from decision_paths.change_major.inputs import ChangeMajorInputs, MissingInputs
@@ -38,15 +37,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_DATA_PATH = os.path.join(os.path.dirname(__file__), "data_sources", "change_major_reference.json")
+# Until the request carries an institution_id (Stage 2), everything runs
+# against the one supported school.
+_DEFAULT_INSTITUTION_ID = "unt"
 
 
-def _load_reference_data() -> dict:
-    # Re-read per request on purpose. The file is small, and it means a
-    # number can be corrected mid-demo without restarting the server. Worth
-    # caching once the file gets large enough for the I/O to matter.
-     with open(_DATA_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def _load_reference_data(institution_id: str = _DEFAULT_INSTITUTION_ID) -> dict:
+    # The loader re-reads files per request on purpose — same behavior the
+    # old single-file read had: small files, and a number can be corrected
+    # mid-demo without restarting the server.
+    return build_reference_data(institution_id)
 
 
 @app.get("/decision-paths")

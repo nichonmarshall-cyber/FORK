@@ -6,8 +6,13 @@ import pytest
 from ..engine import calculate
 from ..inputs import ChangeMajorInputs
 
+# Frozen copy of the original placeholder data. Engine math tests run
+# against this fixture on purpose: golden values like "$14,400 remaining"
+# only hold for these exact numbers, and production data files are going to
+# change as real UNT figures land. Math regressions get caught here; whether
+# the real data files are well-formed is data_loading's tests' job.
 REFERENCE_DATA_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "data_sources", "change_major_reference.json"
+    os.path.dirname(__file__), "fixture_reference_data.json"
 )
 
 
