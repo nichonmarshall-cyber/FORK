@@ -1,11 +1,12 @@
 """
 Tests for the institution data loader.
 
-The most important one here is the equivalence test: Stage 1 is supposed to
-change WHERE data lives, not WHAT the engine sees. So the loader's output
-for 'unt' must match the legacy change_major_reference.json exactly. Once
-that legacy file is deleted (after real data lands), that test goes with it
-and the remaining tests carry the weight.
+The legacy change_major_reference.json equivalence test that used to live
+here was retired in Stage 3, once real UNT data genuinely diverged from
+that placeholder file's shape (different major keys, a restructured
+tuition model) rather than just having different numbers in the same
+shape. Structural/provenance correctness is now covered by the tests
+below instead.
 """
 
 import json
@@ -19,10 +20,6 @@ from ..loader import (
     build_reference_data,
     list_institutions,
     load_institution_file,
-)
-
-_LEGACY_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data_sources", "change_major_reference.json"
 )
 
 
@@ -49,8 +46,38 @@ def test_output_shape_matches_engine_contract():
     data = build_reference_data("unt")
     assert set(data.keys()) == {"institution", "majors", "credits_per_semester_full_time"}
     inst = data["institution"]
-    for key in ("name", "tuition_per_credit_hour", "source", "source_date"):
-        assert key in inst
+    assert "name" in inst
+    assert "tuition" in inst
+    for key in (
+        "full_time_semester_estimate",
+        "full_time_semester_estimate_source",
+        "full_time_semester_estimate_source_date",
+        "full_time_credit_threshold",
+    ):
+        assert key in inst["tuition"]
+
+
+def test_final_supported_program_set_and_credit_hours():
+    """Locks in the exact six programs Stage 3 verified, and their exact
+    credit-hour totals, so a future data edit can't silently drop or
+    mis-total a program without a test noticing."""
+    data = build_reference_data("unt")
+    expected = {
+        "computer_science": 120,
+        "information_technology": 121,
+        "business_administration": 120,
+        "psychology_ba": 120,
+        "psychology_bs": 120,
+        "mechanical_energy_engineering": 127,
+    }
+    assert set(data["majors"].keys()) == set(expected.keys())
+    for key, hours in expected.items():
+        assert data["majors"][key]["credits_required"] == hours, key
+    # These three keys must NOT appear as real majors — they're handled by
+    # major_resolution.py before reaching this data (alias, ambiguous, and
+    # unsupported respectively), not as entries here.
+    for retired_key in ("mechanical_engineering", "psychology", "nursing"):
+        assert retired_key not in data["majors"]
 
 
 def test_every_major_has_full_provenance():
@@ -58,40 +85,14 @@ def test_every_major_has_full_provenance():
     data = build_reference_data("unt")
     for key, major in data["majors"].items():
         for f in (
+            "official_program_name",
+            "degree_type",
             "credits_required_source",
             "credits_required_source_date",
             "salary_source",
             "salary_source_date",
         ):
             assert major.get(f), f"major '{key}' has empty '{f}'"
-
-
-def test_equivalent_to_legacy_reference_file():
-    """Stage 1 must be a pure relocation: same numbers, same sources, same
-    everything the engine reads. Compares against the legacy JSON, ignoring
-    its _README and the institution name (legacy said REPLACE_WITH_YOUR_
-    UNIVERSITY; the new file says the actual university)."""
-    if not os.path.exists(_LEGACY_PATH):
-        pytest.skip("legacy reference file already removed")
-
-    with open(_LEGACY_PATH, encoding="utf-8") as f:
-        legacy = json.load(f)
-
-    new = build_reference_data("unt")
-
-    # Compare every field the engine does math on. Source strings are
-    # excluded deliberately: they're placeholder prose that was reworded in
-    # the move and gets replaced with real citations in Stage 3. Presence
-    # and non-emptiness of sources is covered by the provenance test above.
-    assert set(new["majors"].keys()) == set(legacy["majors"].keys())
-    for key in new["majors"]:
-        for f in ("display_name", "credits_required", "median_starting_salary"):
-            assert new["majors"][key][f] == legacy["majors"][key][f], (key, f)
-    assert new["credits_per_semester_full_time"] == legacy["credits_per_semester_full_time"]
-    assert (
-        new["institution"]["tuition_per_credit_hour"]
-        == legacy["institution"]["tuition_per_credit_hour"]
-    )
 
 
 def test_missing_provenance_field_is_rejected(tmp_path, monkeypatch):
@@ -132,5 +133,9 @@ def test_engine_runs_on_loader_output():
         credits_transferable=60,
     )
     result = calculate(inputs, build_reference_data("unt"))
-    # Same golden values as the engine's own regression test.
-    assert result.incremental_tuition.value == 3600.0
+    # Real 2025-2026 UNT data: CS requires 120 (48 remaining), IT requires
+    # 121 (61 remaining). Tuition uses the verified $6,046/full-time-
+    # semester estimate — see unt.json for the source. This value is
+    # recomputed by the engine itself, not hand-derived, since the tuition
+    # model's semester/threshold logic isn't simple multiplication.
+    assert result.incremental_tuition.value == 5239.87

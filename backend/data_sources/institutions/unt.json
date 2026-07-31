@@ -1,67 +1,91 @@
 {
-  "_README": "PLACEHOLDER DATA for the University of North Texas. Structure is real, numbers are not. Stage 3 replaces tuition and credits_required with figures from UNT's published tuition schedule and undergraduate catalog, with exact URLs and effective dates. Stage 4 replaces the salary block with College Scorecard field-of-study earnings under an honest metric name. Every figure keeps its OWN source/source_date pair — a credit requirement must never cite a salary dataset.",
+  "_README": "Academic (credit-hour) and tuition figures below are sourced and dated to the 2025-2026 UNT Registrar Transfer Guides and UNT Financial Aid & Scholarships, retrieved 2026-07-31. Salary figures (median_starting_salary, salary_source, salary_source_date) remain PLACEHOLDER — College Scorecard integration is Stage 4 and untouched here. Every field keeps its own source/date pair; a credit requirement must never cite the tuition or salary source, and vice versa.",
   "institution_id": "unt",
   "display_name": "University of North Texas",
   "tuition": {
-    "tuition_per_credit_hour": 300.0,
-    "source": "PLACEHOLDER — replace with UNT tuition and fee schedule URL",
-    "source_date": "PLACEHOLDER"
+    "full_time_semester_estimate": 6046.0,
+    "full_time_semester_estimate_source": "UNT Financial Aid & Scholarships, Undergraduate Cost of Attendance — 2025-2026 resident Tuition and Fees estimate of $12,092 for the academic year (Fall + Spring, 15 hours/semester = 30 hours/year), divided by 2 semesters. financialaid.unt.edu/undergraduate.html",
+    "full_time_semester_estimate_source_date": "2025-2026 academic year (retrieved 2026-07-31)",
+    "full_time_credit_threshold": 12,
+    "is_estimate": true,
+    "below_full_time_note": "UNT charges tuition and mandatory fees hourly for enrollment below 12 semester credit hours in a term, and uses a flat rate from 12 up through 15 hours. This engine does not have a verified per-hour rate for below-full-time enrollment; use UNT's official Tuition Estimator (https://estimatemytuition.unt.edu/) for a precise below-full-time figure."
   },
   "credits_per_semester_full_time": 15,
   "majors": {
     "computer_science": {
       "display_name": "Computer Science",
+      "official_program_name": "Computer Science",
+      "degree_type": "B.S.",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
+      "credits_required_source": "UNT Registrar Transfer Guide — ComputerScienceBS2025-2026TransferGuide.pdf (College of Engineering catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
       "median_starting_salary": 75000,
       "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
       "salary_source_date": "PLACEHOLDER"
     },
     "information_technology": {
       "display_name": "Information Technology",
-      "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
+      "official_program_name": "Information Technology",
+      "degree_type": "B.S.",
+      "credits_required": 121,
+      "credits_required_source": "UNT Registrar Transfer Guide — InformationTechnologyBS2025-2026TransferGuide.pdf (College of Engineering catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
       "median_starting_salary": 62000,
       "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
       "salary_source_date": "PLACEHOLDER"
     },
     "business_administration": {
       "display_name": "Business Administration",
+      "official_program_name": "Bachelor of Business Administration",
+      "degree_type": "B.B.A.",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
+      "credits_required_source": "UNT Registrar Transfer Guide — TG_BachelorofBusinessAdministration25_26.pdf (G. Brint Ryan College of Business catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
       "median_starting_salary": 55000,
       "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "salary_source_date": "PLACEHOLDER",
+      "program_limitations": [
+        "This is an umbrella BBA degree; a student must declare a specific professional field (e.g. Accounting, Finance, Management, Marketing). Actual course applicability and some advanced-hour requirements depend on the declared field."
+      ]
     },
-    "psychology": {
-      "display_name": "Psychology",
+    "psychology_ba": {
+      "display_name": "Psychology (B.A.)",
+      "official_program_name": "Psychology",
+      "degree_type": "B.A.",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
+      "credits_required_source": "UNT Registrar Transfer Guide — PsychologyBA2025-2026TransferGuide.pdf (College of Liberal Arts & Social Sciences catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
+      "median_starting_salary": 45000,
+      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
+      "salary_source_date": "PLACEHOLDER",
+      "program_limitations": [
+        "The B.A. requires a foreign-language sequence that the B.S. does not; the two Psychology degrees have different course requirements despite the same total hours."
+      ]
+    },
+    "psychology_bs": {
+      "display_name": "Psychology (B.S.)",
+      "official_program_name": "Psychology",
+      "degree_type": "B.S.",
+      "credits_required": 120,
+      "credits_required_source": "UNT Registrar Transfer Guide — PsychologyBS2025-2026TransferGuide.pdf (College of Liberal Arts & Social Sciences catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
       "median_starting_salary": 45000,
       "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
       "salary_source_date": "PLACEHOLDER"
     },
-    "nursing": {
-      "display_name": "Nursing (BSN)",
-      "credits_required": 128,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 68000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
-    },
-    "mechanical_engineering": {
-      "display_name": "Mechanical Engineering",
-      "credits_required": 128,
-      "credits_required_source": "PLACEHOLDER — replace with UNT undergraduate catalog URL for this major",
-      "credits_required_source_date": "PLACEHOLDER",
+    "mechanical_energy_engineering": {
+      "display_name": "Mechanical & Energy Engineering",
+      "official_program_name": "Mechanical & Energy Engineering",
+      "degree_type": "B.S.",
+      "credits_required": 127,
+      "credits_required_source": "UNT Registrar Transfer Guide — MechanicalEnergyEngineeringBS2025-2026TransferGuide.pdf (College of Engineering catalog requirements)",
+      "credits_required_source_date": "2025-08-26",
       "median_starting_salary": 72000,
       "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "salary_source_date": "PLACEHOLDER",
+      "program_limitations": [
+        "UNT does not offer a plain \"Mechanical Engineering\" major; the current program name is \"Mechanical & Energy Engineering\" and its curriculum includes energy-focused coursework alongside traditional mechanical engineering content."
+      ]
     }
   }
 }

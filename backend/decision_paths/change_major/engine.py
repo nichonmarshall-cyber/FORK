@@ -44,6 +44,8 @@ class PathProjection:
     credits_remaining: LineItem
     semesters_remaining: LineItem
     tuition_remaining: LineItem
+    official_program_name: str | None = None
+    degree_type: str | None = None
 
 
 @dataclass
@@ -63,6 +65,56 @@ class ChangeMajorResult:
 
     assumptions: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+
+
+def _project_tuition_cost(
+    remaining_credits: float,
+    full_time_semester_estimate: float,
+    full_time_credit_threshold: float,
+    standard_full_time_load: float,
+) -> tuple[float, bool]:
+    """
+    Projects tuition by counting full-time SEMESTERS, not by multiplying
+    remaining credits by a per-credit rate. UNT (like most Texas publics)
+    bills a flat rate for any enrollment from the full-time threshold up to
+    the standard full-time load, and an hourly rate below that threshold —
+    so "every credit costs the same" is not how the real bill works, and a
+    flat-rate-times-credits formula would overstate a light final semester
+    and understate a heavy one.
+
+    Whole full-time semesters (standard_full_time_load credits each) each
+    cost full_time_semester_estimate. Any remainder is checked against the
+    threshold:
+      - remainder >= threshold: still flat-rate territory at UNT (12-15
+        hours costs the same), so it's billed as one more full-time
+        semester.
+      - 0 < remainder < threshold: genuinely hourly billing, and this
+        engine doesn't have a verified hourly rate. Rather than inventing
+        one, this approximates that remainder proportionally from the
+        full-time rate and flags it — the caller surfaces that flag as a
+        limitation rather than presenting the whole total as verified.
+
+    Returns (total_cost, final_semester_is_estimated).
+    """
+    if remaining_credits <= 0:
+        return 0.0, False
+
+    full_time_semesters = int(remaining_credits // standard_full_time_load)
+    remainder = remaining_credits - (full_time_semesters * standard_full_time_load)
+
+    final_semester_is_estimated = False
+    if remainder > 0:
+        if remainder >= full_time_credit_threshold:
+            full_time_semesters += 1
+            remainder = 0.0
+        else:
+            final_semester_is_estimated = True
+
+    total = full_time_semesters * full_time_semester_estimate
+    if final_semester_is_estimated:
+        total += (remainder / standard_full_time_load) * full_time_semester_estimate
+
+    return total, final_semester_is_estimated
 
 
 def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorResult:
@@ -85,9 +137,12 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
     current = majors[inputs.current_major]
     prospective = majors[inputs.prospective_major]
 
-    tuition_per_credit = institution["tuition_per_credit_hour"]
-    tuition_source = institution["source"]
-    tuition_date = institution["source_date"]
+    tuition_model = institution["tuition"]
+    full_time_semester_estimate = tuition_model["full_time_semester_estimate"]
+    full_time_credit_threshold = tuition_model["full_time_credit_threshold"]
+    tuition_source = tuition_model["full_time_semester_estimate_source"]
+    tuition_date = tuition_model["full_time_semester_estimate_source_date"]
+    tuition_below_full_time_note = tuition_model.get("below_full_time_note")
     credits_per_semester = reference_data["credits_per_semester_full_time"]
 
     # --- Credits required: prefer an audit over the reference table -----
@@ -135,8 +190,21 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
     semesters_remaining_current = credits_remaining_current / credits_per_semester
     semesters_remaining_prospective = credits_remaining_prospective / credits_per_semester
 
-    tuition_remaining_current = credits_remaining_current * tuition_per_credit
-    tuition_remaining_prospective = credits_remaining_prospective * tuition_per_credit
+    tuition_remaining_current, current_final_semester_estimated = _project_tuition_cost(
+        credits_remaining_current,
+        full_time_semester_estimate,
+        full_time_credit_threshold,
+        credits_per_semester,
+    )
+    tuition_remaining_prospective, prospective_final_semester_estimated = _project_tuition_cost(
+        credits_remaining_prospective,
+        full_time_semester_estimate,
+        full_time_credit_threshold,
+        credits_per_semester,
+    )
+    any_final_semester_estimated = (
+        current_final_semester_estimated or prospective_final_semester_estimated
+    )
 
     # The gap between the two paths. This is the figure that matters.
     incremental_semesters = semesters_remaining_prospective - semesters_remaining_current
@@ -156,6 +224,8 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
 
     current_path = PathProjection(
         major_display=current["display_name"],
+        official_program_name=current.get("official_program_name"),
+        degree_type=current.get("degree_type"),
         credits_required=LineItem(
             label=f"Credits required — {current['display_name']}",
             value=current_required,
@@ -190,6 +260,8 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
 
     prospective_path = PathProjection(
         major_display=prospective["display_name"],
+        official_program_name=prospective.get("official_program_name"),
+        degree_type=prospective.get("degree_type"),
         credits_required=LineItem(
             label=f"Credits required — {prospective['display_name']}",
             value=prospective_required,
@@ -288,15 +360,53 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             "still count toward your degree as electives. Only credits that "
             "apply nowhere are treated as lost here.",
             "Does not include scholarships, financial aid, or loan interest.",
+            "Tuition is projected by full-time SEMESTER, not by multiplying "
+            "remaining credits by a flat per-credit rate — most Texas public "
+            "universities, including UNT, bill a flat rate across a full-time "
+            "band of hours rather than charging proportionally per credit.",
         ],
-        limitations=[
-            "Based on median outcomes across a group of graduates. Not a "
-            "prediction about any individual student.",
-            "Not adjusted for cost of living where you end up working.",
-            "Assumes a single per-credit tuition rate. Real tuition often "
-            "involves flat-rate bands, course fees, and different rates by "
-            "college.",
-            "Salary and tuition data may not be current. Check the date on "
-            "each line item.",
-        ],
+        limitations=_build_limitations(
+            current,
+            prospective,
+            tuition_below_full_time_note=tuition_below_full_time_note,
+            any_final_semester_estimated=any_final_semester_estimated,
+        ),
     )
+
+
+def _build_limitations(
+    current: dict,
+    prospective: dict,
+    tuition_below_full_time_note: str | None,
+    any_final_semester_estimated: bool,
+) -> list[str]:
+    """Assembled separately from the main return so the always-present
+    limitations, the tuition-model caveat, and any major-specific notes
+    (e.g. an umbrella BBA degree needing a declared professional field)
+    don't get lost in one long inline list literal."""
+    limitations = [
+        "Based on median outcomes across a group of graduates. Not a "
+        "prediction about any individual student.",
+        "Not adjusted for cost of living where you end up working.",
+        "Tuition is an estimate derived from a published full-time rate. "
+        "Actual charges vary by tuition plan, residency, program "
+        "differential tuition, course fees, campus location, and online "
+        "vs. on-campus enrollment.",
+        "Salary and tuition data may not be current. Check the date on "
+        "each line item.",
+    ]
+
+    if any_final_semester_estimated and tuition_below_full_time_note:
+        limitations.append(
+            "At least one projected final semester in this plan falls "
+            "below the full-time credit-hour threshold, where tuition is "
+            "billed hourly rather than at the flat full-time rate. "
+            f"{tuition_below_full_time_note}"
+        )
+
+    for major in (current, prospective):
+        for note in major.get("program_limitations", []):
+            if note not in limitations:
+                limitations.append(f"{major['display_name']}: {note}")
+
+    return limitations

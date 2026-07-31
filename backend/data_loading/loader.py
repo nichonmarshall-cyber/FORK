@@ -36,8 +36,13 @@ class MalformedInstitutionData(ValueError):
 # Fields every major entry must carry. Provenance fields are required on
 # purpose — a number without a source can't render in the "Why am I seeing
 # this?" panel, so it's malformed data, not a value with an empty citation.
+# official_program_name and degree_type are required for real institution
+# files (not the engine's own test fixtures) so a major key always traces
+# back to an exact, named UNT program rather than an internal label.
 _REQUIRED_MAJOR_FIELDS = (
     "display_name",
+    "official_program_name",
+    "degree_type",
     "credits_required",
     "credits_required_source",
     "credits_required_source_date",
@@ -46,7 +51,12 @@ _REQUIRED_MAJOR_FIELDS = (
     "salary_source_date",
 )
 
-_REQUIRED_TUITION_FIELDS = ("tuition_per_credit_hour", "source", "source_date")
+_REQUIRED_TUITION_FIELDS = (
+    "full_time_semester_estimate",
+    "full_time_semester_estimate_source",
+    "full_time_semester_estimate_source_date",
+    "full_time_credit_threshold",
+)
 
 
 def _read_json(path: str) -> dict:
@@ -113,7 +123,7 @@ def build_reference_data(institution_id: str) -> dict:
     already consumes:
 
         {
-          "institution": {name, tuition_per_credit_hour, source, source_date},
+          "institution": {name, tuition: {...}},
           "majors": {...},
           "credits_per_semester_full_time": N,
         }
@@ -127,9 +137,7 @@ def build_reference_data(institution_id: str) -> dict:
     return {
         "institution": {
             "name": raw["display_name"],
-            "tuition_per_credit_hour": raw["tuition"]["tuition_per_credit_hour"],
-            "source": raw["tuition"]["source"],
-            "source_date": raw["tuition"]["source_date"],
+            "tuition": raw["tuition"],
         },
         "majors": raw["majors"],
         "credits_per_semester_full_time": raw["credits_per_semester_full_time"],

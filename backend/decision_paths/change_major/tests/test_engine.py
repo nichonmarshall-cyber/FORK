@@ -41,22 +41,26 @@ def test_switching_cs_to_it_reports_incremental_not_gross_cost(reference_data):
 
     assert result.credits_lost.value == 12
 
-    # Staying: 120 - 72 = 48 credits -> 3.2 semesters -> $14,400
+    # Staying: 120 - 72 = 48 credits remaining -> 3 full-time semesters
+    # (45 credits) plus a 3-credit final semester below the 12-hour
+    # full-time threshold, approximated proportionally and flagged as an
+    # estimate: 3*6000 + (3/15)*6000 = 19200.
     assert result.current_path.credits_remaining.value == 48
     assert result.current_path.semesters_remaining.value == 3.2
-    assert result.current_path.tuition_remaining.value == 14400.0
+    assert result.current_path.tuition_remaining.value == 19200.0
 
-    # Switching: 120 - 60 = 60 credits -> 4.0 semesters -> $18,000
+    # Switching: 120 - 60 = 60 credits remaining -> exactly 4 full-time
+    # semesters, no partial remainder: 4*6000 = 24000.
     assert result.prospective_path.credits_remaining.value == 60
     assert result.prospective_path.semesters_remaining.value == 4.0
-    assert result.prospective_path.tuition_remaining.value == 18000.0
+    assert result.prospective_path.tuition_remaining.value == 24000.0
 
     # The difference is what switching costs.
     assert result.incremental_semesters.value == 0.8
-    assert result.incremental_tuition.value == 3600.0
+    assert result.incremental_tuition.value == 4800.0
     # 0.8 extra semesters = 0.4 years * $62,000 IT median = $24,800
     assert result.foregone_earnings_cost.value == 24800.0
-    assert result.incremental_total_cost.value == 28400.0
+    assert result.incremental_total_cost.value == 29600.0
 
     # CS $75,000 -> IT $62,000
     assert result.annual_salary_delta.value == -13000
@@ -75,9 +79,9 @@ def test_switching_can_be_cheaper_and_reports_a_negative(reference_data):
     result = calculate(inputs, reference_data)
 
     assert result.incremental_semesters.value == -0.53
-    assert result.incremental_tuition.value == -2400.0
+    assert result.incremental_tuition.value == -3200.0
     assert result.foregone_earnings_cost.value == -12000.0
-    assert result.incremental_total_cost.value == -14400.0
+    assert result.incremental_total_cost.value == -15200.0
 
 
 def test_zero_transfer_credits_maximizes_incremental_cost(reference_data):
@@ -95,7 +99,7 @@ def test_zero_transfer_credits_maximizes_incremental_cost(reference_data):
     # Switching: 128 - 0 = 128 -> 8.53 semesters
     assert result.prospective_path.semesters_remaining.value == pytest.approx(8.53, abs=0.01)
     assert result.incremental_semesters.value == pytest.approx(6.53, abs=0.01)
-    assert result.incremental_tuition.value == 29400.0
+    assert result.incremental_tuition.value == 39200.0
 
 
 def test_both_paths_complete_means_no_difference(reference_data):
@@ -132,7 +136,7 @@ def test_audit_derived_credits_required_overrides_reference_table(reference_data
     assert "what-if degree audit" in result.prospective_path.credits_required.source
     # 132 - 60 = 72 remaining, vs 48 staying -> 24 credit difference
     assert result.prospective_path.credits_remaining.value == 72
-    assert result.incremental_tuition.value == 7200.0
+    assert result.incremental_tuition.value == 10800.0
 
 
 def test_override_credits_required_date_matches_the_override_not_the_table(reference_data):
@@ -180,7 +184,92 @@ def test_non_override_credits_required_still_cites_table_date(reference_data):
     )
 
 
-def test_credit_provenance_flows_from_inputs_into_result(reference_data):
+def test_tuition_charges_flat_rate_through_the_full_time_band(reference_data):
+    """UNT's real billing rule: 12-15 hours in a semester costs the same
+    flat rate. A remainder of exactly the full-time load, or anything at
+    or above the full-time threshold, must NOT be charged proportionally
+    less than a whole semester — it's still one full semester's bill."""
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        # 120 - 0 = 120 remaining = exactly 8 full-time semesters, no
+        # remainder at all.
+        prospective_major="information_technology",
+        credits_completed=0,
+        credits_transferable=0,
+    )
+    result = calculate(inputs, reference_data)
+    # 120 credits / 15 per semester = 8 semesters * $6,000 = $48,000, with
+    # no partial-semester estimate involved.
+    assert result.prospective_path.tuition_remaining.value == 48000.0
+    assert not any(
+        "billed hourly rather than at the flat full-time rate" in limitation
+        for limitation in result.limitations
+    )
+
+
+def test_tuition_below_threshold_remainder_is_flagged_as_estimated(reference_data):
+    """A final semester under the full-time threshold (here, a 3-credit
+    remainder) is genuine hourly-billing territory this engine doesn't have
+    a verified rate for, so the response must say so rather than presenting
+    the whole total as equally authoritative."""
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        prospective_major="information_technology",
+        credits_completed=72,  # 120 - 72 = 48 remaining -> 3 semesters + 3
+        credits_transferable=60,
+    )
+    result = calculate(inputs, reference_data)
+    assert any(
+        "billed hourly rather than at the flat full-time rate" in limitation
+        for limitation in result.limitations
+    )
+
+
+def test_tuition_remainder_at_or_above_threshold_still_flat_rate(reference_data):
+    """A remainder of 12, 13, 14, or exactly 15 credits is still inside
+    UNT's flat-rate band and must be billed as one more full semester, not
+    proportionally — this is the case a naive credits/15*rate formula gets
+    wrong in the OTHER direction from the sub-12-hour case."""
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        # 120 - 3 = 117 remaining -> 7 full semesters (105) + 12 remainder,
+        # and 12 is exactly the full-time threshold, so it's one more full
+        # semester: 8 semesters total, no partial-estimate flag.
+        prospective_major="information_technology",
+        credits_completed=3,
+        credits_transferable=0,
+    )
+    result = calculate(inputs, reference_data)
+    assert result.prospective_path.tuition_remaining.value == 48000.0
+    assert not any(
+        "billed hourly rather than at the flat full-time rate" in limitation
+        for limitation in result.limitations
+    )
+
+
+def test_official_program_name_and_degree_type_pass_through_when_present(reference_data):
+    """When reference data supplies official_program_name/degree_type
+    (real institution files do; this fixture doesn't need to), the engine
+    should carry them through rather than silently dropping them."""
+    reference_data["majors"]["computer_science"]["official_program_name"] = "Computer Science"
+    reference_data["majors"]["computer_science"]["degree_type"] = "B.S."
+
+    inputs = ChangeMajorInputs(
+        current_major="computer_science",
+        prospective_major="information_technology",
+        credits_completed=60,
+        credits_transferable=50,
+    )
+    result = calculate(inputs, reference_data)
+    assert result.current_path.official_program_name == "Computer Science"
+    assert result.current_path.degree_type == "B.S."
+    # information_technology in the fixture has neither field — must not
+    # error, just come back as None rather than a KeyError.
+    assert result.prospective_path.official_program_name is None
+    assert result.prospective_path.degree_type is None
+
+
+
     """The result has to distinguish a registrar's figure from a student's
     estimate. If both showed the same source, the provenance panel would be
     inaccurate."""

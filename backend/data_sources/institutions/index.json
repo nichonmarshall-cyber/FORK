@@ -1,11 +1,11 @@
 {
-  "_README": "Registry of supported institutions. The loader reads this to resolve an institution_id to a data file. 'status' is honest labeling for the UI and for tests: 'placeholder_data' means the file exists and loads but its numbers are NOT real yet. Flip to 'verified' only when every value in the file has a real source and date.",
+  "_README": "Registry of supported institutions. The loader reads this to resolve an institution_id to a data file. 'status' is honest labeling for the UI and for tests: 'placeholder_data' means every figure is illustrative; 'partial_verified_data' means academic/tuition figures are sourced and dated but salary figures are still placeholders (College Scorecard integration is Stage 4); 'verified' means every figure in the file has a real, dated source.",
   "institutions": [
     {
       "id": "unt",
       "display_name": "University of North Texas",
       "file": "unt.json",
-      "status": "placeholder_data"
+      "status": "partial_verified_data"
     }
   ]
 }

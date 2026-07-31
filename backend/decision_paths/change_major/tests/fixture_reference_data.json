@@ -1,10 +1,16 @@
 {
   "_README": "PLACEHOLDER DATA. Every figure below is illustrative, not sourced. Before this project is demoed or submitted, replace these with real numbers: (1) tuition_per_credit_hour from your university's published tuition/fee schedule, (2) median_starting_salary from College Scorecard (collegescorecard.ed.gov) filtered by institution + field of study, (3) credits_required from your university's degree catalog. Each figure has its OWN source/source_date pair because they come from different documents — the provenance panel reads these directly, so a credit requirement must not cite a salary dataset.",
-  "institution": {
+
+"institution": {
     "name": "REPLACE_WITH_YOUR_UNIVERSITY",
-    "tuition_per_credit_hour": 300.0,
-    "source": "PLACEHOLDER — replace with university tuition schedule URL",
-    "source_date": "PLACEHOLDER"
+    "tuition": {
+      "full_time_semester_estimate": 6000.0,
+      "full_time_semester_estimate_source": "PLACEHOLDER — replace with university tuition/fee schedule",
+      "full_time_semester_estimate_source_date": "PLACEHOLDER",
+      "full_time_credit_threshold": 12,
+      "is_estimate": true,
+      "below_full_time_note": "PLACEHOLDER — replace with a note on how the university bills below-full-time enrollment"
+    }
   },
   "majors": {
     "computer_science": {

@@ -12,10 +12,10 @@ pip install -r requirements.txt
 ## 2. Run tests (no API key required)
 
 ```bash
-pytest decision_paths/change_major/tests/ -v
+pytest -v
 ```
 
-All 8 should pass. This is the engine working — no AI, no network, pure math.
+73+ tests should pass across the engine, the data loader, major-key resolution, and the API layer — no AI, no network, pure math for the engine tests specifically.
 
 ## 3. Run the server
 
@@ -49,20 +49,19 @@ curl -X POST http://localhost:8000/decision-paths/change-major/converse \
   -d '{"message": "I have completed 72 credits in Computer Science and I am thinking about switching to Information Technology. Around 60 of those credits should transfer."}'
 ```
 
-## Before you demo or submit: replace the placeholder data
+## Data status
 
-`data_sources/change_major_reference.json` is currently filled with **illustrative numbers, not real data**. Every field marked `"PLACEHOLDER"` needs to become:
+`data_sources/institutions/unt.json` now has **real, sourced academic and tuition figures** (UNT Registrar Transfer Guides and UNT Financial Aid & Scholarships, 2025-2026 catalog year). `median_starting_salary` / `salary_source` / `salary_source_date` on each major are still `"PLACEHOLDER"` — College Scorecard integration is Stage 4 and hasn't landed yet, so those numbers are not real and should not be quoted or demoed as such. Check `institutions/index.json`'s `status` field (`"partial_verified_data"`) for the current honest state.
 
-- `institution.tuition_per_credit_hour` → your university's published tuition/fee schedule
-- `majors.*.median_starting_salary` → College Scorecard (collegescorecard.ed.gov), filtered by your institution + field of study
-- `majors.*.credits_required` → your university's degree catalog
-- `source` / `source_date` on each → the actual URL and date you pulled the number, so the "Why am I seeing this?" panel cites something real
+Six majors are currently supported: `computer_science`, `information_technology`, `business_administration`, `psychology_ba`, `psychology_bs`, `mechanical_energy_engineering`. Three older keys are handled specially rather than being real majors — see `decision_paths/change_major/major_resolution.py`:
+- `mechanical_engineering` (old key) auto-resolves to `mechanical_energy_engineering` with a warning in the response
+- `psychology` (ambiguous — UNT offers both a B.A. and a B.S.) returns a 422 asking the caller to pick `psychology_ba` or `psychology_bs`
+- `nursing` returns a 422 explaining that UNT's BSN is administered through UNT Health, a separate institution in the UNT System, and isn't modeled by this Decision Path yet
 
-This is the single highest-leverage thing left to do — the whole pitch is "every number is real and traceable," so the demo data has to actually be real before you present it.
+Tuition is now projected by full-time **semester**, not a flat per-credit rate — UNT bills a flat rate across a 12-15 hour full-time band and hourly below that. See `engine.py`'s `_project_tuition_cost` for the model and `unt.json`'s `institution.tuition` block for the sourced figures.
 
 ## What's not built yet
 
-- Frontend (Next.js) — not started
 - Live data adapters (Scorecard/BLS API calls) — v1 uses the static JSON file above by design; see `ARCHITECTURE.md`
 - The numeric-provenance check in `ai/interface.py::_verify_no_invented_numbers` is a stub — see the TODO comment in that file
 - Second Decision Path (Graduate Now vs. Stay) — cut from v1 build scope; only add back if time remains

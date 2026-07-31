@@ -19,6 +19,11 @@ from data_loading.loader import UnknownInstitution, build_reference_data
 from decision_paths.change_major import engine as change_major_engine
 from decision_paths.change_major.formatter import format_result
 from decision_paths.change_major.inputs import ChangeMajorInputs, MissingInputs
+from decision_paths.change_major.major_resolution import (
+    AmbiguousMajorError,
+    UnsupportedMajorError,
+    resolve_major,
+)
 from decision_paths.change_major.metadata import CHANGE_MAJOR_METADATA
 from audit_import.parser import parse_audit_pdf, propose_engine_inputs
 
@@ -47,6 +52,42 @@ def _load_reference_data(institution_id: str = _DEFAULT_INSTITUTION_ID) -> dict:
     # old single-file read had: small files, and a number can be corrected
     # mid-demo without restarting the server.
     return build_reference_data(institution_id)
+
+
+def _resolve_major_or_raise(field: str, key: str) -> tuple[str, str | None]:
+    """
+    Runs a caller-supplied major key through resolve_major() and converts
+    its two special-case exceptions into the HTTP responses a client can
+    actually act on:
+      - ambiguous (e.g. "psychology") -> 422 with the real options listed
+      - unsupported (e.g. "nursing")  -> 422 with why, so a frontend can
+        show a clear "not offered this way" message instead of a generic
+        validation error
+    Returns (resolved_key, warning_or_None) on success.
+    """
+    try:
+        resolved = resolve_major(field, key)
+    except AmbiguousMajorError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "clarification_required",
+                "field": e.field,
+                "message": str(e),
+                "options": e.options,
+            },
+        )
+    except UnsupportedMajorError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "unsupported_program",
+                "field": e.field,
+                "key": e.key,
+                "message": e.explanation,
+            },
+        )
+    return resolved.key, resolved.warning
 
 
 @app.get("/decision-paths")
@@ -91,6 +132,13 @@ def calculate_change_major(request: ChangeMajorRequest):
     payload = request.model_dump()
     institution_id = payload.pop("institution_id")
 
+    warnings: list[str] = []
+    for field in ("current_major", "prospective_major"):
+        resolved_key, warning = _resolve_major_or_raise(field, payload[field])
+        payload[field] = resolved_key
+        if warning:
+            warnings.append(warning)
+
     try:
         inputs = ChangeMajorInputs(**payload)
     except Exception as e:
@@ -106,7 +154,10 @@ def calculate_change_major(request: ChangeMajorRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return format_result(result)
+    formatted = format_result(result)
+    if warnings:
+        formatted["warnings"] = warnings
+    return formatted
 
 
 class ConversationRequest(BaseModel):
@@ -132,13 +183,30 @@ def converse_change_major(request: ConversationRequest):
             "missing_fields": e.missing_fields,
         }
 
+    warnings: list[str] = []
+    for field, key in (
+        ("current_major", inputs.current_major),
+        ("prospective_major", inputs.prospective_major),
+    ):
+        resolved_key, warning = _resolve_major_or_raise(field, key)
+        if resolved_key != key:
+            inputs = inputs.model_copy(update={field: resolved_key})
+        if warning:
+            warnings.append(warning)
+
     try:
         reference_data = _load_reference_data(request.institution_id)
     except UnknownInstitution as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    result = change_major_engine.calculate(inputs, reference_data)
+    try:
+        result = change_major_engine.calculate(inputs, reference_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     formatted = format_result(result)
+    if warnings:
+        formatted["warnings"] = warnings
     formatted["explanation"] = explain_results(formatted)
     formatted["status"] = "complete"
     return formatted

@@ -23,7 +23,7 @@ def _line_item(li: LineItem) -> dict:
 
 
 def _path(p: PathProjection) -> dict:
-    return {
+    path_dict = {
         "major": p.major_display,
         "line_items": [
             _line_item(p.credits_required),
@@ -33,6 +33,14 @@ def _path(p: PathProjection) -> dict:
             _line_item(p.tuition_remaining),
         ],
     }
+    # Only present when the reference data supplies them — older or
+    # synthetic reference data (e.g. engine test fixtures) may not have
+    # these, and the frontend shouldn't render a blank field for it.
+    if p.official_program_name:
+        path_dict["official_program_name"] = p.official_program_name
+    if p.degree_type:
+        path_dict["degree_type"] = p.degree_type
+    return path_dict
 
 
 def format_result(result: ChangeMajorResult) -> dict:
