@@ -58,9 +58,13 @@ def test_switching_cs_to_it_reports_incremental_not_gross_cost(reference_data):
     # The difference is what switching costs.
     assert result.incremental_semesters.value == 0.8
     assert result.incremental_tuition.value == 4800.0
-    # 0.8 extra semesters = 0.4 years * $62,000 IT median = $24,800
-    assert result.foregone_earnings_cost.value == 24800.0
-    assert result.incremental_total_cost.value == 29600.0
+    # 0.8 extra semesters = 0.4 years * $75,000 — the CURRENT major's
+    # first-year earnings, because that's the income being given up by
+    # graduating later. Previously this used the PROSPECTIVE major's
+    # figure, which answered the wrong question.
+    assert result.foregone_earnings_cost.value == 30000.0
+    assert result.foregone_earnings_cost.label == "Estimated early-career income delayed"
+    assert result.incremental_total_cost.value == 34800.0
 
     # CS $75,000 -> IT $62,000
     assert result.annual_salary_delta.value == -13000
@@ -80,8 +84,8 @@ def test_switching_can_be_cheaper_and_reports_a_negative(reference_data):
 
     assert result.incremental_semesters.value == -0.53
     assert result.incremental_tuition.value == -3200.0
-    assert result.foregone_earnings_cost.value == -12000.0
-    assert result.incremental_total_cost.value == -15200.0
+    assert result.foregone_earnings_cost.value == -18133.33
+    assert result.incremental_total_cost.value == -21333.33
 
 
 def test_zero_transfer_credits_maximizes_incremental_cost(reference_data):
@@ -402,6 +406,15 @@ def test_credit_requirements_cite_catalog_not_salary_dataset(reference_data):
 
     assert "catalog" in result.current_path.credits_required.source.lower()
     assert "catalog" in result.prospective_path.credits_required.source.lower()
-    assert "scorecard" in result.current_major_median_salary.source.lower()
-    assert "scorecard" in result.prospective_major_median_salary.source.lower()
-    assert "scorecard" in result.foregone_earnings_cost.source.lower()
+    # Earnings provenance must be a different source from the catalog —
+    # that separation is the point. This fixture is synthetic, so assert on
+    # the structural marker rather than the dataset name; real data cites
+    # College Scorecard, which data_loading's tests verify against the
+    # actual file.
+    for item in (
+        result.current_major_median_salary,
+        result.prospective_major_median_salary,
+        result.foregone_earnings_cost,
+    ):
+        assert "field-of-study" in item.source.lower()
+        assert item.source != result.current_path.credits_required.source

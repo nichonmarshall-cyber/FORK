@@ -14,12 +14,19 @@ from .engine import ChangeMajorResult, LineItem, PathProjection
 
 
 def _line_item(li: LineItem) -> dict:
-    return {
+    item = {
         "label": li.label,
         "value": li.value,
         "source": li.source,
         "source_date": li.source_date,
     }
+    # Only emitted when something is actually off, so the common case stays
+    # uncluttered. A null value with a status is the signal to the frontend
+    # to render "not available" plus the reason — never a 0 or a dash.
+    if li.status != "available":
+        item["status"] = li.status
+        item["status_note"] = li.status_note
+    return item
 
 
 def _path(p: PathProjection) -> dict:
@@ -73,6 +80,11 @@ def format_result(result: ChangeMajorResult) -> dict:
             _line_item(result.prospective_major_median_salary),
             _line_item(result.annual_salary_delta),
         ],
+        # Career context: the 1/4/5-year earnings trajectory for each
+        # program, what the federal category actually covers, and how many
+        # degrees it represents. Display-only — none of this is multiplied
+        # into any figure above.
+        "earnings_context": result.earnings_context,
         "why_am_i_seeing_this": {
             "assumptions": result.assumptions,
             "limitations": result.limitations,

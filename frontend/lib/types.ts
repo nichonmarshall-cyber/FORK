@@ -6,7 +6,36 @@
 
 export interface LineItem {
   label: string;
-  value: number;
+  // null when the underlying figure genuinely isn't available (federal
+  // privacy suppression, or no data reported). Render "not available" plus
+  // status_note — never 0, and never a blank cell.
+  value: number | null;
+  source: string;
+  source_date: string;
+  // Only present when something is off; absent means the value is good.
+  status?: "privacy_suppressed" | "unavailable" | "partial";
+  status_note?: string | null;
+}
+
+export interface EarningsTrajectoryPoint {
+  period: "1yr" | "4yr" | "5yr";
+  label: string;
+  value: number | null;
+  status: "available" | "privacy_suppressed" | "unavailable";
+  status_note: string | null;
+  graduates_measured: number | null;
+}
+
+export interface EarningsContext {
+  major: string;
+  field_of_study: string | null;
+  degrees_awarded_in_field: number | null;
+  degrees_awarded_label: string;
+  // Present when the federal category is broader than the single program
+  // (e.g. CS and IT share one category), explaining what the number covers.
+  covers: string | null;
+  population_note: string | null;
+  trajectory: EarningsTrajectoryPoint[];
   source: string;
   source_date: string;
 }
@@ -14,6 +43,10 @@ export interface LineItem {
 export interface PathComparison {
   major: string;
   line_items: LineItem[];
+  // Present when the reference data supplies them (real institution data
+  // does; older or synthetic reference data may not).
+  official_program_name?: string;
+  degree_type?: string;
 }
 
 export interface CalcResult {
@@ -31,10 +64,17 @@ export interface CalcResult {
     switching: PathComparison;
   };
   line_items: LineItem[];
+  // Display-only career context: the 1/4/5-year earnings trajectory per
+  // program. Never feeds a calculation.
+  earnings_context: EarningsContext[];
   why_am_i_seeing_this: {
     assumptions: string[];
     limitations: string[];
   };
+  // Non-fatal notes about the request itself — e.g. a caller used a
+  // renamed major key and the request was still processed under the new
+  // one. Absent when there's nothing to flag.
+  warnings?: string[];
 }
 
 export interface CalcRequest {
@@ -67,12 +107,22 @@ export async function calculateChangeMajor(
     // The backend sends real validation messages. Show them rather than a
     // generic failure — "credits_transferable cannot exceed credits_completed"
     // is more useful than "something went wrong".
-    const detail = await res.json().catch(() => null);
-    throw new Error(
-      typeof detail?.detail === "string"
-        ? detail.detail
-        : `Request failed (${res.status})`,
-    );
+    //
+    // As of Stage 3, `detail` can also be a structured object rather than
+    // a string, for the two major-resolution special cases:
+    //   { status: "clarification_required", message, options }
+    //   { status: "unsupported_program", message }
+    // Both carry a human-readable `message`, so surface that instead of
+    // stringifying the whole object.
+    const errorBody = await res.json().catch(() => null);
+    const detail = errorBody?.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : typeof detail?.message === "string"
+          ? detail.message
+          : `Request failed (${res.status})`;
+    throw new Error(message);
   }
 
   return res.json();

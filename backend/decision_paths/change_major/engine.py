@@ -27,11 +27,19 @@ from .inputs import ChangeMajorInputs
 
 @dataclass
 class LineItem:
-    """A value and its provenance. One never travels without the other."""
+    """A value and its provenance. One never travels without the other.
+
+    `value` is None when the underlying figure genuinely isn't available —
+    federal privacy suppression, or no data reported. In that case
+    `status` says which, and `status_note` explains it in plain language.
+    None is never rendered as 0: a zero here would be an invented fact.
+    """
     label: str
-    value: float
+    value: float | None
     source: str
     source_date: str
+    status: str = "available"
+    status_note: str | None = None
 
 
 @dataclass
@@ -65,6 +73,78 @@ class ChangeMajorResult:
 
     assumptions: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    # Display-only earnings context (4yr/5yr trajectory, what the figure
+    # covers). Never feeds a calculation — see _earnings_context.
+    earnings_context: list[dict] = field(default_factory=list)
+
+
+def _earnings_source(earnings: dict) -> str:
+    """
+    Source string for an earnings figure. CIP codes and metric codes live
+    here in the provenance detail, deliberately not in any label a student
+    reads — "11.01" means nothing to someone choosing a major, but it's
+    exactly what a reviewer checking our work needs.
+    """
+    if not earnings.get("source"):
+        return "No earnings source available."
+    parts = [earnings["source"]]
+    if earnings.get("dataset_release"):
+        parts.append(f"released {earnings['dataset_release']}")
+    if earnings.get("cip_4_digit"):
+        parts.append(
+            f"federal field-of-study category {earnings['cip_4_digit']} "
+            f"({earnings['cip_title']}), {earnings.get('credential_level_label', '')}".strip()
+        )
+    return "; ".join(p for p in parts if p)
+
+
+def _earnings_date(earnings: dict) -> str:
+    if earnings.get("retrieved"):
+        return f"Retrieved {earnings['retrieved']}"
+    return "Not available"
+
+
+def _earnings_line_item(display_name: str, earnings: dict) -> LineItem:
+    """The headline earnings figure for one program: first-year median."""
+    one = earnings["1yr"]
+    return LineItem(
+        label=f"{one['label']} — {display_name}",
+        value=float(one["value"]) if one["status"] == "available" else None,
+        source=_earnings_source(earnings),
+        source_date=_earnings_date(earnings),
+        status=one["status"],
+        status_note=one.get("status_note"),
+    )
+
+
+def _earnings_context(display_name: str, earnings: dict) -> dict:
+    """
+    The 4- and 5-year figures, plus what the number actually covers.
+    Display-only: nothing here feeds a calculation. It's here because the
+    trajectory from year one to year five is genuinely useful when you're
+    weighing a major, even though it would be wrong to multiply by it.
+    """
+    return {
+        "major": display_name,
+        "field_of_study": earnings.get("cip_title"),
+        "degrees_awarded_in_field": earnings.get("degrees_awarded_in_field"),
+        "degrees_awarded_label": "Degrees awarded in this broader field",
+        "covers": earnings.get("shared_note"),
+        "population_note": earnings.get("population_note"),
+        "trajectory": [
+            {
+                "period": key,
+                "label": earnings[key]["label"],
+                "value": earnings[key]["value"],
+                "status": earnings[key]["status"],
+                "status_note": earnings[key].get("status_note"),
+                "graduates_measured": earnings[key].get("graduates_measured"),
+            }
+            for key in ("1yr", "4yr", "5yr")
+        ],
+        "source": _earnings_source(earnings),
+        "source_date": _earnings_date(earnings),
+    }
 
 
 def _project_tuition_cost(
@@ -210,15 +290,43 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
     incremental_semesters = semesters_remaining_prospective - semesters_remaining_current
     incremental_tuition = tuition_remaining_prospective - tuition_remaining_current
 
-    # Delayed earnings apply only to the additional time, valued at what
-    # the new major pays. Two semesters to a year.
-    foregone_earnings_cost = (incremental_semesters / 2) * prospective["median_starting_salary"]
+    # --- Delayed early-career income ------------------------------------
+    # Valued at the CURRENT major's first-year earnings, not the new one's.
+    # The question this answers is "what would I have been earning during
+    # the extra time, had I graduated on my original schedule" — so it's
+    # the path being given up that sets the rate.
+    #
+    # First-year earnings specifically, not the 4- or 5-year figures: a
+    # student delayed one semester misses income at roughly entry-level
+    # wages, not at what they'd be earning years into a career. The later
+    # figures are carried through for context but never multiplied here.
+    #
+    # If the source figure is suppressed or absent, this stays None. It
+    # does NOT become zero — a zero would quietly claim delaying costs
+    # nothing, which is both false and the exact failure this whole
+    # provenance design exists to prevent.
+    current_earnings = current["earnings"]
+    prospective_earnings = prospective["earnings"]
 
-    incremental_total_cost = incremental_tuition + foregone_earnings_cost
+    current_1yr = current_earnings["1yr"]
+    prospective_1yr = prospective_earnings["1yr"]
 
-    annual_salary_delta = (
-        prospective["median_starting_salary"] - current["median_starting_salary"]
-    )
+    if current_1yr["status"] == "available":
+        delayed_income = (incremental_semesters / 2) * current_1yr["value"]
+        incremental_total_cost = incremental_tuition + delayed_income
+    else:
+        delayed_income = None
+        # Total cost falls back to tuition alone, and says so, rather than
+        # silently presenting a partial total as though it were complete.
+        incremental_total_cost = incremental_tuition
+
+    if (
+        current_1yr["status"] == "available"
+        and prospective_1yr["status"] == "available"
+    ):
+        annual_earnings_delta = prospective_1yr["value"] - current_1yr["value"]
+    else:
+        annual_earnings_delta = None
 
     # --- Build the result, with a source on every value -----------------
 
@@ -316,41 +424,83 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             source_date="Calculated",
         ),
         foregone_earnings_cost=LineItem(
-            label="Earnings delayed by the additional time",
-            value=round(foregone_earnings_cost, 2),
-            source=prospective["salary_source"],
-            source_date=prospective["salary_source_date"],
+            label="Estimated early-career income delayed",
+            value=round(delayed_income, 2) if delayed_income is not None else None,
+            source=(
+                f"{current_1yr['label']} for {current['display_name']}, "
+                f"multiplied by the additional time. {_earnings_source(current_earnings)}"
+            ),
+            source_date=_earnings_date(current_earnings),
+            status=current_1yr["status"],
+            status_note=(
+                None
+                if current_1yr["status"] == "available"
+                else (
+                    "Can't be estimated: "
+                    f"{(current_1yr['status_note'] or '').lower() or 'no earnings figure is available'}"
+                )
+            ),
         ),
         incremental_total_cost=LineItem(
             label="Estimated total difference from switching",
             value=round(incremental_total_cost, 2),
-            source="Additional tuition + delayed earnings (see line items above)",
+            source=(
+                "Additional tuition + estimated early-career income delayed "
+                "(see line items above)"
+                if delayed_income is not None
+                else (
+                    "Additional tuition only — early-career income delayed "
+                    "could not be estimated, so this is not a complete total"
+                )
+            ),
             source_date="Calculated",
+            status="available" if delayed_income is not None else "partial",
+            status_note=(
+                None
+                if delayed_income is not None
+                else (
+                    "This covers tuition only. Because earnings data for "
+                    f"{current['display_name']} isn't available, the income "
+                    "side of the comparison is missing from this total."
+                )
+            ),
         ),
-        current_major_median_salary=LineItem(
-            label=f"Median starting salary — {current['display_name']}",
-            value=float(current["median_starting_salary"]),
-            source=current["salary_source"],
-            source_date=current["salary_source_date"],
+        current_major_median_salary=_earnings_line_item(
+            current["display_name"], current_earnings
         ),
-        prospective_major_median_salary=LineItem(
-            label=f"Median starting salary — {prospective['display_name']}",
-            value=float(prospective["median_starting_salary"]),
-            source=prospective["salary_source"],
-            source_date=prospective["salary_source_date"],
+        prospective_major_median_salary=_earnings_line_item(
+            prospective["display_name"], prospective_earnings
         ),
         annual_salary_delta=LineItem(
-            label="Annual starting salary difference",
-            value=float(annual_salary_delta),
-            source="Calculated from the two median salary figures above",
+            label="Difference in early-career earnings (1 year after graduation)",
+            value=(
+                float(annual_earnings_delta)
+                if annual_earnings_delta is not None
+                else None
+            ),
+            source="Calculated from the two earnings figures above",
             source_date="Calculated",
+            status="available" if annual_earnings_delta is not None else "unavailable",
+            status_note=(
+                None
+                if annual_earnings_delta is not None
+                else (
+                    "Can't be compared: at least one of the two programs has "
+                    "no published earnings figure."
+                )
+            ),
         ),
         assumptions=[
             "Costs shown are the difference between finishing the new major "
             "and finishing your current one, not the full price of the new "
             "degree.",
-            "Delayed earnings use the new major's median starting salary, "
-            "not lifetime earnings.",
+            "Delayed income is estimated from what graduates of your "
+            "CURRENT major typically earn one year after finishing, since "
+            "that's the income you'd be giving up by graduating later. "
+            "It is an estimate of delayed early-career income, not a "
+            "guaranteed loss.",
+            "The 4-year and 5-year earnings figures are shown for career "
+            "context only. They are never used in the cost calculation.",
             f"Assumes full-time enrollment at {credits_per_semester} credits "
             "per semester on both paths.",
             f"Credits completed: {inputs.credits_source}. "
@@ -371,6 +521,10 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             tuition_below_full_time_note=tuition_below_full_time_note,
             any_final_semester_estimated=any_final_semester_estimated,
         ),
+        earnings_context=[
+            _earnings_context(current["display_name"], current_earnings),
+            _earnings_context(prospective["display_name"], prospective_earnings),
+        ],
     )
 
 
@@ -403,6 +557,37 @@ def _build_limitations(
             "billed hourly rather than at the flat full-time rate. "
             f"{tuition_below_full_time_note}"
         )
+
+    # Who the earnings figures actually describe. Stated once even though
+    # both majors draw on the same dataset.
+    population_note = (current.get("earnings") or {}).get("population_note")
+    if population_note:
+        limitations.append(population_note)
+
+    # What each figure covers, where the federal category is broader than
+    # the single program the student picked.
+    for major in (current, prospective):
+        note = (major.get("earnings") or {}).get("shared_note")
+        if note:
+            entry = f"{major['display_name']} earnings: {note}"
+            if entry not in limitations:
+                limitations.append(entry)
+
+    # Suppressed or absent figures, named explicitly rather than left as a
+    # blank space in the UI.
+    for major in (current, prospective):
+        one = ((major.get("earnings") or {}).get("1yr") or {})
+        if one.get("status") == "privacy_suppressed":
+            limitations.append(
+                f"No published earnings figure for {major['display_name']}: "
+                "too few graduates for the federal data to report without "
+                "risking identifying individual students."
+            )
+        elif one.get("status") == "unavailable":
+            limitations.append(
+                f"No published earnings figure for {major['display_name']}: "
+                f"{(one.get('status_note') or 'no data reported').rstrip('.')}."
+            )
 
     for major in (current, prospective):
         for note in major.get("program_limitations", []):

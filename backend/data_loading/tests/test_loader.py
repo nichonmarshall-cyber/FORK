@@ -89,10 +89,25 @@ def test_every_major_has_full_provenance():
             "degree_type",
             "credits_required_source",
             "credits_required_source_date",
-            "salary_source",
-            "salary_source_date",
         ):
             assert major.get(f), f"major '{key}' has empty '{f}'"
+
+        # Earnings arrive from the Scorecard join, not the institution
+        # file, and every major must end up with a block — even if its
+        # figures are suppressed.
+        earnings = major.get("earnings")
+        assert earnings, f"major '{key}' has no earnings block"
+        for period in ("1yr", "4yr", "5yr"):
+            cell = earnings[period]
+            assert cell["status"] in (
+                "available",
+                "privacy_suppressed",
+                "unavailable",
+            ), (key, period, cell["status"])
+            # A missing figure must be None, never 0 — a zero would be an
+            # invented fact dressed up as data.
+            if cell["status"] != "available":
+                assert cell["value"] is None, (key, period)
 
 
 def test_missing_provenance_field_is_rejected(tmp_path, monkeypatch):
@@ -101,7 +116,7 @@ def test_missing_provenance_field_is_rejected(tmp_path, monkeypatch):
     from .. import loader
 
     good = load_institution_file("unt")
-    del good["majors"]["computer_science"]["salary_source"]
+    del good["majors"]["computer_science"]["credits_required_source"]
 
     inst_dir = tmp_path / "institutions"
     inst_dir.mkdir()
@@ -116,7 +131,7 @@ def test_missing_provenance_field_is_rejected(tmp_path, monkeypatch):
 
     with pytest.raises(MalformedInstitutionData) as exc:
         build_reference_data("unt")
-    assert "salary_source" in str(exc.value)
+    assert "credits_required_source" in str(exc.value)
     assert "computer_science" in str(exc.value)
 
 

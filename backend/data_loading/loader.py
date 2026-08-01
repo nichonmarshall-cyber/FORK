@@ -46,9 +46,6 @@ _REQUIRED_MAJOR_FIELDS = (
     "credits_required",
     "credits_required_source",
     "credits_required_source_date",
-    "median_starting_salary",
-    "salary_source",
-    "salary_source_date",
 )
 
 _REQUIRED_TUITION_FIELDS = (
@@ -117,6 +114,123 @@ def _validate(raw: dict, institution_id: str) -> None:
                 )
 
 
+_SCORECARD_DIR = os.path.join(_DATA_ROOT, "college_scorecard")
+
+
+class MissingEarningsData(ValueError):
+    """Raised when a major has no earnings entry at all. Distinct from a
+    major whose earnings are present-but-suppressed: that's a real, honest
+    answer from the federal data and flows through to the UI. This is a
+    wiring mistake — someone added a major and forgot to map it."""
+
+
+def _load_scorecard(institution_id: str) -> dict | None:
+    """Processed College Scorecard earnings for one institution, or None if
+    that institution has no Scorecard file yet. Absent is allowed — a new
+    school can be added with academic data before earnings are wired up,
+    and majors then carry an explicit 'unavailable' rather than blocking
+    the whole request."""
+    path = os.path.join(_SCORECARD_DIR, f"{institution_id}_field_of_study.json")
+    if not os.path.exists(path):
+        return None
+    return _read_json(path)
+
+
+def _attach_earnings(majors: dict, scorecard: dict | None, institution_id: str) -> None:
+    """
+    Folds Scorecard earnings into each major, in place.
+
+    Every major ends up with an `earnings` block no matter what, so the
+    engine and formatter never have to branch on presence. What varies is
+    the per-metric `status`: 'available' carries a number, while
+    'privacy_suppressed' and 'unavailable' carry None and a reason. Those
+    two are kept apart deliberately — "too few graduates to publish" and
+    "we have no data" are different facts and a student deserves to be
+    told which one applies.
+    """
+    if scorecard is None:
+        for major in majors.values():
+            major["earnings"] = _absent_earnings(
+                "No College Scorecard data has been imported for this "
+                "institution yet."
+            )
+        return
+
+    field_map = scorecard["fields_of_study"]
+    major_map = scorecard["majors"]
+
+    for key, major in majors.items():
+        mapping = major_map.get(key)
+        if mapping is None:
+            raise MissingEarningsData(
+                f"'{institution_id}': major '{key}' has no entry in "
+                f"{institution_id}_field_of_study.json. Add it to MAJOR_MAP "
+                "in scripts/import_scorecard.py and re-run the import, or "
+                "the major will silently show no earnings."
+            )
+
+        cip_key = mapping["cip_4_digit"].replace(".", "")
+        field = field_map.get(cip_key)
+        if field is None:
+            raise MissingEarningsData(
+                f"'{institution_id}': major '{key}' maps to CIP "
+                f"{mapping['cip_4_digit']}, which isn't in the processed "
+                "Scorecard file."
+            )
+
+        major["earnings"] = {
+            **{k: dict(v) for k, v in field["earnings"].items()},
+            "cip_4_digit": field["cip_4_digit"],
+            "cip_title": field["cip_title"],
+            "degrees_awarded_in_field": field["degrees_awarded_in_field"],
+            "shared_note": mapping.get("shared_note"),
+            "source": scorecard["source"],
+            "source_url": scorecard.get("source_url"),
+            "dataset_release": scorecard["dataset_release"],
+            "retrieved": scorecard["retrieved"],
+            "credential_level_label": scorecard["credential_level_label"],
+            "population_note": scorecard["population_note"],
+        }
+
+
+def _absent_earnings(reason: str) -> dict:
+    """An earnings block for a major with no Scorecard coverage at all.
+    Same shape as a real one so nothing downstream needs a special case.
+
+    Built as one literal rather than a comprehension plus .update(): the
+    block deliberately mixes nested dicts (the three periods) with plain
+    scalars (the metadata), and splitting construction across two steps
+    makes type checkers infer a narrower value type from the first half
+    that the second half then violates.
+    """
+
+    def cell(label: str) -> dict:
+        return {
+            "value": None,
+            "status": "unavailable",
+            "status_note": reason,
+            "label": label,
+            "metric_code": None,
+            "graduates_measured": None,
+        }
+
+    return {
+        "1yr": cell("Median earnings 1 year after graduation"),
+        "4yr": cell("Median earnings 4 years after graduation"),
+        "5yr": cell("Median earnings 5 years after graduation"),
+        "cip_4_digit": None,
+        "cip_title": None,
+        "degrees_awarded_in_field": None,
+        "shared_note": None,
+        "source": None,
+        "source_url": None,
+        "dataset_release": None,
+        "retrieved": None,
+        "credential_level_label": None,
+        "population_note": None,
+    }
+
+
 def build_reference_data(institution_id: str) -> dict:
     """
     The one function main.py calls. Returns the exact shape the engine
@@ -134,11 +248,14 @@ def build_reference_data(institution_id: str) -> dict:
     raw = load_institution_file(institution_id)
     _validate(raw, institution_id)
 
+    majors = raw["majors"]
+    _attach_earnings(majors, _load_scorecard(institution_id), institution_id)
+
     return {
         "institution": {
             "name": raw["display_name"],
             "tuition": raw["tuition"],
         },
-        "majors": raw["majors"],
+        "majors": majors,
         "credits_per_semester_full_time": raw["credits_per_semester_full_time"],
     }

@@ -1,71 +1,268 @@
 {
-  "_README": "PLACEHOLDER DATA. Every figure below is illustrative, not sourced. Before this project is demoed or submitted, replace these with real numbers: (1) tuition_per_credit_hour from your university's published tuition/fee schedule, (2) median_starting_salary from College Scorecard (collegescorecard.ed.gov) filtered by institution + field of study, (3) credits_required from your university's degree catalog. Each figure has its OWN source/source_date pair because they come from different documents — the provenance panel reads these directly, so a credit requirement must not cite a salary dataset.",
-
-"institution": {
+  "_README": "PLACEHOLDER DATA. Every figure below is illustrative, not sourced. Before this project is demoed or submitted, replace these with real numbers: (1) tuition_per_credit_hour from your university's published tuition/fee schedule, (2) median_starting_salary from College Scorecard (collegescorecard.ed.gov) filtered by institution + field of study, (3) credits_required from your university's degree catalog. Each figure has its OWN source/source_date pair because they come from different documents \u2014 the provenance panel reads these directly, so a credit requirement must not cite a salary dataset.",
+  "institution": {
     "name": "REPLACE_WITH_YOUR_UNIVERSITY",
     "tuition": {
       "full_time_semester_estimate": 6000.0,
-      "full_time_semester_estimate_source": "PLACEHOLDER — replace with university tuition/fee schedule",
+      "full_time_semester_estimate_source": "PLACEHOLDER \u2014 replace with university tuition/fee schedule",
       "full_time_semester_estimate_source_date": "PLACEHOLDER",
       "full_time_credit_threshold": 12,
       "is_estimate": true,
-      "below_full_time_note": "PLACEHOLDER — replace with a note on how the university bills below-full-time enrollment"
+      "below_full_time_note": "PLACEHOLDER \u2014 replace with a note on how the university bills below-full-time enrollment"
     }
   },
   "majors": {
     "computer_science": {
       "display_name": "Computer Science",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 75000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 75000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 105000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 112500.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     },
     "information_technology": {
       "display_name": "Information Technology",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 62000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 62000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 86800.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 93000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     },
     "business_administration": {
       "display_name": "Business Administration",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 55000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 55000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 77000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 82500.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     },
     "psychology": {
       "display_name": "Psychology",
       "credits_required": 120,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 45000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 45000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 62999.99999999999,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 67500.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     },
     "nursing": {
       "display_name": "Nursing (BSN)",
       "credits_required": 128,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 68000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 68000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 95200.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 102000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     },
     "mechanical_engineering": {
       "display_name": "Mechanical Engineering",
       "credits_required": 128,
-      "credits_required_source": "PLACEHOLDER — replace with university degree catalog URL for this major",
+      "credits_required_source": "PLACEHOLDER \u2014 replace with university degree catalog URL for this major",
       "credits_required_source_date": "PLACEHOLDER",
-      "median_starting_salary": 72000,
-      "salary_source": "PLACEHOLDER — replace with College Scorecard field-of-study earnings for this institution",
-      "salary_source_date": "PLACEHOLDER"
+      "earnings": {
+        "1yr": {
+          "value": 72000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 1 year after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "4yr": {
+          "value": 100800.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 4 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "5yr": {
+          "value": 108000.0,
+          "status": "available",
+          "status_note": null,
+          "label": "Median earnings 5 years after graduation",
+          "metric_code": "FIXTURE",
+          "graduates_measured": 100
+        },
+        "cip_4_digit": "99.99",
+        "cip_title": "Fixture Field",
+        "degrees_awarded_in_field": 200,
+        "shared_note": null,
+        "source": "FIXTURE DATA \u2014 not a real source",
+        "source_url": null,
+        "dataset_release": "FIXTURE",
+        "retrieved": "FIXTURE",
+        "credential_level_label": "Bachelor's degree",
+        "population_note": "FIXTURE population note."
+      }
     }
   },
   "credits_per_semester_full_time": 15
