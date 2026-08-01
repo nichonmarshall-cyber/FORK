@@ -231,6 +231,69 @@ def _absent_earnings(reason: str) -> dict:
     }
 
 
+_BLS_DIR = os.path.join(_DATA_ROOT, "bls")
+
+
+def _load_bls_occupations(institution_id: str) -> dict | None:
+    """Processed CIP-SOC-occupation data for one institution, or None if
+    it hasn't been imported yet. Same 'absent is allowed' rule as
+    Scorecard — a school can have academic and earnings data before its
+    occupations file exists."""
+    path = os.path.join(_BLS_DIR, f"{institution_id}_occupations.json")
+    if not os.path.exists(path):
+        return None
+    return _read_json(path)
+
+
+def _attach_occupations(majors: dict, bls: dict | None) -> None:
+    """
+    Folds BLS occupation data into each major, in place. Purely additive
+    display context — nothing here is read by the calculation engine, so a
+    missing or malformed occupations file degrades to an empty list rather
+    than blocking a Change Major calculation that has nothing to do with
+    career browsing.
+
+    Unlike earnings, there's no MissingEarningsData-style hard failure for
+    an unmapped major: occupations are optional context, and a major with
+    none is a legitimate (if less useful) state, not a data bug.
+    """
+    for major in majors.values():
+        major["occupations"] = _empty_occupations()
+
+    if bls is None:
+        return
+
+    for key, major in majors.items():
+        entry = bls["majors"].get(key)
+        if entry is None:
+            continue
+        major["occupations"] = {
+            "list": entry["occupations"],
+            "crosswalk_source": bls["crosswalk_source"],
+            "crosswalk_source_url": bls.get("crosswalk_source_url"),
+            "crosswalk_limitation": bls["crosswalk_limitation"],
+            "wage_source": bls["wage_source"],
+            "wage_release": bls["wage_release"],
+            "projections_source": bls["projections_source"],
+            "projections_cycle": bls["projections_cycle"],
+            "retrieved": bls["retrieved"],
+        }
+
+
+def _empty_occupations() -> dict:
+    return {
+        "list": [],
+        "crosswalk_source": None,
+        "crosswalk_source_url": None,
+        "crosswalk_limitation": None,
+        "wage_source": None,
+        "wage_release": None,
+        "projections_source": None,
+        "projections_cycle": None,
+        "retrieved": None,
+    }
+
+
 def build_reference_data(institution_id: str) -> dict:
     """
     The one function main.py calls. Returns the exact shape the engine
@@ -250,6 +313,7 @@ def build_reference_data(institution_id: str) -> dict:
 
     majors = raw["majors"]
     _attach_earnings(majors, _load_scorecard(institution_id), institution_id)
+    _attach_occupations(majors, _load_bls_occupations(institution_id))
 
     return {
         "institution": {

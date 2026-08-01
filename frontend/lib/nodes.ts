@@ -9,7 +9,7 @@
  * "why isn't this filled in", and each one carries its reason.
  */
 
-import { CalcResult, LineItem, findLineItem } from "./types";
+import { CalcResult, CareerContext, LineItem, Occupation, findLineItem } from "./types";
 
 export type NodeState =
   | "completed"
@@ -88,6 +88,15 @@ export interface ContextGroup {
   rows: ContextRow[];
   /** Source line shown under the group. */
   source?: string;
+  /**
+   * Show only this many rows by default, with a "Show all N" control to
+   * reveal the rest. Undefined means show every row — used for short lists
+   * (Career Outlook's summary) where pagination would be pointless.
+   */
+  initialRows?: number;
+  /** Noun for the "Show all N ___" control, e.g. "occupations". Falls
+   * back to a bare count if omitted. */
+  expandNoun?: string;
 }
 
 export interface NodeDef {
@@ -185,6 +194,89 @@ function earningsGroup(r: CalcResult, major: string): ContextGroup | undefined {
 }
 
 /** One sentence comparing the two majors, or an honest note if we can't. */
+// --- occupation helpers -------------------------------------------------
+// These read from result.career_context, which the backend builds from the
+// CIP-SOC crosswalk plus BLS wage/growth data. No occupation names, SOC
+// codes, or wage figures are encoded here — only formatting and the
+// "how many rows to show by default" policy from the product decision to
+// show 5 by default with a "show all" control.
+
+function careerContextFor(r: CalcResult, major: string): CareerContext | undefined {
+  return r.career_context.find((c) => c.major === major);
+}
+
+const growth = (pct: number | null) => {
+  if (pct === null) return null;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(1)}%`;
+};
+
+/** One row per occupation: title + wage as the headline, growth/openings/
+ * education as the supporting note underneath — reuses ContextRow's
+ * existing note slot rather than inventing a new richer row shape. */
+function occupationRow(occ: Occupation): ContextRow {
+  const details: string[] = [];
+  const g = growth(occ.percent_change_2024_2034);
+  if (g) details.push(`${g} growth (2024–2034)`);
+  if (occ.annual_openings !== null) {
+    details.push(`${Math.round(occ.annual_openings * 1000).toLocaleString()} openings/yr`);
+  }
+  if (occ.typical_education) details.push(`Typically requires: ${occ.typical_education}`);
+
+  return {
+    label: occ.title,
+    value: occ.median_annual_wage !== null ? money(occ.median_annual_wage) : "Not available",
+    note: details.length > 0 ? details.join(" · ") : undefined,
+    muted: occ.median_annual_wage === null,
+  };
+}
+
+/** Full occupation list for one major — Job Market Demand's detailed
+ * evidence view. Paginated per the product decision: 5 shown by default,
+ * "Show all N" reveals the rest. Nothing is removed from the data. */
+function occupationsGroup(
+  r: CalcResult,
+  major: string,
+  initialRows: number,
+): ContextGroup | undefined {
+  const ctx = careerContextFor(r, major);
+  if (!ctx || ctx.occupations.length === 0) return undefined;
+
+  const sourceParts = [
+    ctx.wage_source && ctx.wage_release ? `${ctx.wage_source} (${ctx.wage_release})` : null,
+    ctx.projections_source && ctx.projections_cycle
+      ? `${ctx.projections_source} (${ctx.projections_cycle})`
+      : null,
+  ].filter(Boolean);
+
+  return {
+    title: `${major} — ${ctx.sort_order}`,
+    rows: ctx.occupations.map(occupationRow),
+    source: sourceParts.join(" · "),
+    initialRows,
+    expandNoun: "occupations",
+  };
+}
+
+/** A short, un-paginated summary for Career Outlook — top occupations by
+ * wage only, no growth/openings/education table. The detailed version of
+ * this same data lives in Job Market Demand; this one is deliberately
+ * thin so the two nodes don't just repeat each other. */
+function occupationsSummaryGroup(r: CalcResult, major: string): ContextGroup | undefined {
+  const ctx = careerContextFor(r, major);
+  if (!ctx || ctx.occupations.length === 0) return undefined;
+
+  return {
+    title: `${major} — connected occupations`,
+    rows: ctx.occupations.slice(0, 3).map((occ) => ({
+      label: occ.title,
+      value: occ.median_annual_wage !== null ? money(occ.median_annual_wage) : "Not available",
+      muted: occ.median_annual_wage === null,
+    })),
+    source: ctx.crosswalk_source ?? undefined,
+  };
+}
+
 function earningsComparison(r: CalcResult): string {
   const delta = r.summary.annual_salary_delta;
   const cur = r.summary.current_major;
@@ -560,7 +652,13 @@ export const NODES: NodeDef[] = [
         contextGroups: [
           earningsGroup(r, r.summary.current_major),
           earningsGroup(r, r.summary.prospective_major),
+          occupationsSummaryGroup(r, r.summary.current_major),
+          occupationsSummaryGroup(r, r.summary.prospective_major),
         ].filter(Boolean) as ContextGroup[],
+        // Both the Scorecard's population caveat AND the crosswalk's
+        // "expert judgment, not outcomes data" caveat apply here — they
+        // describe weaknesses in two different datasets, so both need to
+        // stay visible rather than picking one.
         dataLimitations: earningsLimitations(r),
       };
     },
@@ -614,10 +712,62 @@ export const NODES: NodeDef[] = [
     branch: "career",
     kind: "leaf",
     parent: "career",
-    question: "Is this field projected to grow?",
-    resolve: locked(
-      "Bureau of Labor Statistics occupational projections aren't wired in yet. Planned, not guessed at.",
-    ),
+    question: "Which occupations connect to each major, and how are they trending?",
+    resolve: (r) => {
+      if (!r) return idle;
+      const cur = careerContextFor(r, r.summary.current_major);
+      const pro = careerContextFor(r, r.summary.prospective_major);
+      const hasData = (cur?.occupations.length ?? 0) > 0 || (pro?.occupations.length ?? 0) > 0;
+
+      if (!hasData) {
+        return {
+          state: "needs_info",
+          reason:
+            "No occupation data has been imported for one or both of these majors yet.",
+        };
+      }
+
+      const totalOccupations =
+        (cur?.occupations.length ?? 0) + (pro?.occupations.length ?? 0);
+
+      return {
+        state: "completed",
+        display: `${totalOccupations} occupations`,
+        // Not one of engine.py's named calculated fields — this node's
+        // "value" is a count of real, sourced occupations, not a dollar
+        // figure. Built here from the same career_context data the rest
+        // of this node uses, so it still cites a real source rather than
+        // standing in for a number that doesn't otherwise exist. This is
+        // what makes the collapsible "Why am I seeing this?" section
+        // (assumptions/limitations) appear below — NodePanel gates that
+        // block on lineItem being present.
+        lineItem: {
+          label: "Occupations connected to each major",
+          value: totalOccupations,
+          source: cur?.crosswalk_source ?? "U.S. Dept. of Education / U.S. Dept. of Labor, CIP-SOC Crosswalk",
+          source_date: cur?.retrieved ?? "Not available",
+        },
+        known: [
+          `Current major: ${r.summary.current_major}`,
+          `Considering: ${r.summary.prospective_major}`,
+          "Ranked by national employment size, not by fit or recommendation",
+        ],
+        contextGroups: [
+          occupationsGroup(r, r.summary.current_major, 5),
+          occupationsGroup(r, r.summary.prospective_major, 5),
+        ].filter(Boolean) as ContextGroup[],
+        // The crosswalk limitation surfaces here directly, not only inside
+        // the collapsible provenance block below — this node's entire
+        // purpose is the crosswalk data, so the caveat about what that
+        // data can and can't tell you has to be immediately visible.
+        dataLimitations: [
+          cur?.crosswalk_limitation,
+          cur?.crosswalk_source && cur?.retrieved
+            ? `Source: ${cur.crosswalk_source} (retrieved ${cur.retrieved})`
+            : undefined,
+        ].filter(Boolean) as string[],
+      };
+    },
   },
 
   // --- Approval ---------------------------------------------------------

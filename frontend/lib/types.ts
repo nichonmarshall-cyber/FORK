@@ -49,6 +49,31 @@ export interface PathComparison {
   degree_type?: string;
 }
 
+export interface Occupation {
+  title: string;
+  median_annual_wage: number | null;
+  national_employment: number | null;
+  percent_change_2024_2034: number | null;
+  annual_openings: number | null;
+  typical_education: string | null;
+}
+
+export interface CareerContext {
+  major: string;
+  occupations: Occupation[];
+  // Ranking rule, always "Most common nationally" — labelled explicitly
+  // so this doesn't read as a best-fit or recommended-for-you ordering.
+  sort_order: string;
+  crosswalk_source: string | null;
+  crosswalk_source_url: string | null;
+  crosswalk_limitation: string | null;
+  wage_source: string | null;
+  wage_release: string | null;
+  projections_source: string | null;
+  projections_cycle: string | null;
+  retrieved: string | null;
+}
+
 export interface CalcResult {
   summary: {
     current_major: string;
@@ -67,6 +92,9 @@ export interface CalcResult {
   // Display-only career context: the 1/4/5-year earnings trajectory per
   // program. Never feeds a calculation.
   earnings_context: EarningsContext[];
+  // Occupations connected to each major via the federal CIP-SOC crosswalk,
+  // with BLS wage/growth context. Also display-only.
+  career_context: CareerContext[];
   why_am_i_seeing_this: {
     assumptions: string[];
     limitations: string[];

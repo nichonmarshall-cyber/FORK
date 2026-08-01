@@ -85,6 +85,7 @@ def format_result(result: ChangeMajorResult) -> dict:
         # degrees it represents. Display-only — none of this is multiplied
         # into any figure above.
         "earnings_context": result.earnings_context,
+        "career_context": result.career_context,
         "why_am_i_seeing_this": {
             "assumptions": result.assumptions,
             "limitations": result.limitations,

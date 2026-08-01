@@ -12,10 +12,13 @@ venv/
 
 # Secrets
 .env
-
 # Raw federal datasets. Large, redistributable from the source, and
 # converted into a small processed file by scripts/import_scorecard.py.
 # Only the processed output belongs in the repo.
 backend/data_raw/
 *Most-Recent-Cohorts-Field-of-Study*.csv
 *Most-Recent-Cohorts-Field-of-Study*.zip
+CIP2020_SOC2018_Crosswalk.xlsx
+oesm25nat*.zip
+oesm25nat/
+Employment_Projections.csv

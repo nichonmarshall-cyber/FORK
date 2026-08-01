@@ -234,10 +234,18 @@ export default function NodePanel({ node, result, onClose }: Props) {
 }
 
 function ContextGroupBlock({ group }: { group: ContextGroup }) {
+  // Local, per-group expand state. Collapsed by default whenever the group
+  // supplies initialRows and actually has more rows than that — groups
+  // without initialRows (short summaries) just render everything.
+  const [expanded, setExpanded] = useState(false);
+  const limit = group.initialRows;
+  const hasMore = limit !== undefined && group.rows.length > limit;
+  const visibleRows = expanded || !hasMore ? group.rows : group.rows.slice(0, limit);
+
   return (
     <Section title={group.title}>
       <ul className="space-y-2.5">
-        {group.rows.map((row) => (
+        {visibleRows.map((row) => (
           <li key={row.label}>
             <div className="flex justify-between gap-3">
               <span className="text-slate-400">{row.label}</span>
@@ -257,6 +265,18 @@ function ContextGroupBlock({ group }: { group: ContextGroup }) {
           </li>
         ))}
       </ul>
+
+      {hasMore && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-2.5 text-[11.5px] font-medium text-slate-400 underline decoration-slate-600 underline-offset-2 transition hover:text-slate-200"
+        >
+          {expanded
+            ? "Show fewer"
+            : `Show all ${group.rows.length}${group.expandNoun ? ` ${group.expandNoun}` : ""}`}
+        </button>
+      )}
+
       {group.source && (
         <p className="mt-3 text-[11.5px] leading-snug text-slate-600">
           {group.source}

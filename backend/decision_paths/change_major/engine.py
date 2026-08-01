@@ -76,6 +76,9 @@ class ChangeMajorResult:
     # Display-only earnings context (4yr/5yr trajectory, what the figure
     # covers). Never feeds a calculation — see _earnings_context.
     earnings_context: list[dict] = field(default_factory=list)
+    # Display-only occupation context (CIP-SOC crosswalk + BLS wage/growth).
+    # Also never feeds a calculation — see _career_context.
+    career_context: list[dict] = field(default_factory=list)
 
 
 def _earnings_source(earnings: dict) -> str:
@@ -144,6 +147,41 @@ def _earnings_context(display_name: str, earnings: dict) -> dict:
         ],
         "source": _earnings_source(earnings),
         "source_date": _earnings_date(earnings),
+    }
+
+
+def _career_context(display_name: str, occupations: dict) -> dict:
+    """
+    Occupations connected to one major, with wage and growth context.
+    Purely additive — the engine never calculates from this, and no
+    occupation here is presented as THE outcome of the degree, just as an
+    occupation the federal crosswalk connects it to.
+    """
+    return {
+        "major": display_name,
+        "occupations": [
+            {
+                "title": occ["title"],
+                "median_annual_wage": occ["median_annual_wage"],
+                "national_employment": occ["national_employment"],
+                "percent_change_2024_2034": occ["percent_change_2024_2034"],
+                "annual_openings": occ["annual_openings"],
+                "typical_education": occ["typical_education"],
+            }
+            for occ in occupations["list"]
+        ],
+        # "Most common nationally" is the ranking rule (national employment,
+        # descending) — labelled explicitly so it doesn't read as a
+        # best-fit or recommended-for-you ordering, which it isn't.
+        "sort_order": "Most common nationally",
+        "crosswalk_source": occupations["crosswalk_source"],
+        "crosswalk_source_url": occupations["crosswalk_source_url"],
+        "crosswalk_limitation": occupations["crosswalk_limitation"],
+        "wage_source": occupations["wage_source"],
+        "wage_release": occupations["wage_release"],
+        "projections_source": occupations["projections_source"],
+        "projections_cycle": occupations["projections_cycle"],
+        "retrieved": occupations["retrieved"],
     }
 
 
@@ -525,7 +563,34 @@ def calculate(inputs: ChangeMajorInputs, reference_data: dict) -> ChangeMajorRes
             _earnings_context(current["display_name"], current_earnings),
             _earnings_context(prospective["display_name"], prospective_earnings),
         ],
+        career_context=[
+            _career_context(current["display_name"], _occupations_or_empty(current)),
+            _career_context(
+                prospective["display_name"], _occupations_or_empty(prospective)
+            ),
+        ],
     )
+
+
+_EMPTY_OCCUPATIONS = {
+    "list": [],
+    "crosswalk_source": None,
+    "crosswalk_source_url": None,
+    "crosswalk_limitation": None,
+    "wage_source": None,
+    "wage_release": None,
+    "projections_source": None,
+    "projections_cycle": None,
+    "retrieved": None,
+}
+
+
+def _occupations_or_empty(major: dict) -> dict:
+    """Real institution data always has this (the loader guarantees it).
+    Test fixtures and any future institution added before BLS import runs
+    may not — degrade to an empty list rather than a KeyError, same
+    'absent is allowed' rule the loader itself follows."""
+    return major.get("occupations") or _EMPTY_OCCUPATIONS
 
 
 def _build_limitations(
@@ -593,5 +658,16 @@ def _build_limitations(
         for note in major.get("program_limitations", []):
             if note not in limitations:
                 limitations.append(f"{major['display_name']}: {note}")
+
+    # The CIP-SOC crosswalk's own weakness is a DIFFERENT problem from the
+    # Scorecard's: it's about which occupations connect to a program at
+    # all, not about who was measured within one. Kept as a separate
+    # entry rather than merged into the population note above, since
+    # conflating "expert-judgment relatedness" with "who Scorecard
+    # measured" would blur two distinct reasons a number might not mean
+    # what it looks like it means.
+    crosswalk_note = _occupations_or_empty(current).get("crosswalk_limitation")
+    if crosswalk_note and crosswalk_note not in limitations:
+        limitations.append(crosswalk_note)
 
     return limitations
