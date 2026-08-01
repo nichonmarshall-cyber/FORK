@@ -122,6 +122,19 @@ const money = (n: number) =>
     maximumFractionDigits: 0,
   })}`;
 
+/**
+ * Formats a salary/earnings DELTA specifically — not an absolute figure.
+ * A $0 delta is a real, meaningful result (CS and IT genuinely share one
+ * earnings category, so "no difference" is correct information), but
+ * showing it as a raw "$0/yr" reads like missing or broken data rather
+ * than an intentional finding. Say what it means instead.
+ */
+export const payDelta = (n: number | null | undefined): string => {
+  if (n === null || n === undefined) return "Not available";
+  if (n === 0) return "No change in pay";
+  return `${money(n)}/yr`;
+};
+
 const semesters = (n: number) => {
   const abs = Math.abs(n);
   const unit = abs === 1 ? "semester" : "semesters";
@@ -629,10 +642,11 @@ export const NODES: NodeDef[] = [
             : delta < 0
               ? "at_risk"
               : "completed",
-        display:
-          delta === null || delta === undefined
-            ? undefined
-            : money(delta) + "/yr",
+        // null stays undefined (hides the headline box entirely — this
+        // is a "needs_info" state, not a number to show). A real 0 still
+        // needs to render, just worded so it doesn't look like missing
+        // data — that's what payDelta's zero case does.
+        display: delta === null || delta === undefined ? undefined : payDelta(delta),
         lineItem: li,
         derivedFrom: [
           findLineItem(

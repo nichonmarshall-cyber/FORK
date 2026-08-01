@@ -4,7 +4,7 @@ import { useState } from "react";
 import DecisionMap from "@/components/DecisionMap";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
-import { NODES_BY_ID } from "@/lib/nodes";
+import { NODES_BY_ID, payDelta } from "@/lib/nodes";
 import { CalcResult, calculateChangeMajor } from "@/lib/types";
 
 /**
@@ -134,16 +134,15 @@ export default function Home() {
               {/* Not "starting salary": the figure is a median measured at
                   a stated point after graduation, and calling it a starting
                   salary implies a precision and a timing the data doesn't
-                  have. Also handles the null case — a missing comparison
-                  must not render as $0. */}
+                  have. payDelta also handles two non-"real number" states:
+                  null (comparison unavailable — must not render as $0) and
+                  a genuine 0 (CS and IT share one federal earnings
+                  category, so "no difference" is real information, not a
+                  missing value — worded as "No change in pay" instead of
+                  a bare $0 that would read as broken data). */}
               <Affect
                 label="Earnings 1 yr after graduation"
-                value={
-                  result.summary.annual_salary_delta === null ||
-                  result.summary.annual_salary_delta === undefined
-                    ? "Not available"
-                    : money(result.summary.annual_salary_delta) + "/yr"
-                }
+                value={payDelta(result.summary.annual_salary_delta)}
                 bad={(result.summary.annual_salary_delta ?? 0) < 0}
               />
             </div>

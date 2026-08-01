@@ -38,6 +38,13 @@ interface Props {
 
 export default function NodePanel({ node, result, onClose }: Props) {
   const [showWhy, setShowWhy] = useState(true);
+  // Collapsed by default: opening "Why am I seeing this?" should stay
+  // cheap (source, calculated-from, date), not immediately dump the full
+  // assumptions/limitations lists that were making the panel scroll for
+  // ages. These are a second, optional layer of depth, not part of the
+  // first click.
+  const [showAssumptions, setShowAssumptions] = useState(false);
+  const [showLimitations, setShowLimitations] = useState(false);
 
   if (!node) {
     return (
@@ -216,12 +223,22 @@ export default function NodePanel({ node, result, onClose }: Props) {
 
                 {result && (
                   <>
-                    <Field label="What this assumes">
+                    <SubAccordion
+                      label="What this assumes"
+                      count={result.why_am_i_seeing_this.assumptions.length}
+                      open={showAssumptions}
+                      onToggle={() => setShowAssumptions((v) => !v)}
+                    >
                       <Bullets items={result.why_am_i_seeing_this.assumptions} />
-                    </Field>
-                    <Field label="What this does not tell you">
+                    </SubAccordion>
+                    <SubAccordion
+                      label="What this does not tell you"
+                      count={result.why_am_i_seeing_this.limitations.length}
+                      open={showLimitations}
+                      onToggle={() => setShowLimitations((v) => !v)}
+                    >
                       <Bullets items={result.why_am_i_seeing_this.limitations} />
-                    </Field>
+                    </SubAccordion>
                   </>
                 )}
               </div>
@@ -321,6 +338,40 @@ function Section({
         {children}
       </div>
     </section>
+  );
+}
+
+function SubAccordion({
+  label,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border-t border-white/[0.06] pt-4 first:border-t-0 first:pt-0">
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
+          {label} ({count})
+        </span>
+        <span className="text-[13px] text-slate-500">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="mt-2 text-[12.5px] leading-relaxed text-slate-300">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
