@@ -13,7 +13,13 @@
  */
 
 import { useState } from "react";
-import { BRANCH_COLOR, NodeDef, NodeState, STATE_LABEL } from "@/lib/nodes";
+import {
+  BRANCH_COLOR,
+  ContextGroup,
+  NodeDef,
+  NodeState,
+  STATE_LABEL,
+} from "@/lib/nodes";
 import { CalcResult } from "@/lib/types";
 
 const STATE_TONE: Record<NodeState, string> = {
@@ -146,6 +152,27 @@ export default function NodePanel({ node, result, onClose }: Props) {
           </Section>
         )}
 
+        {r.contextGroups?.map((g) => (
+          <ContextGroupBlock key={g.title} group={g} />
+        ))}
+
+        {/* Deliberately OUTSIDE the collapsible block below. A caveat the
+            student has to expand a panel to find hasn't really been
+            disclosed — and these describe who the earnings figures leave
+            out, which changes how the number should be read. */}
+        {r.dataLimitations && r.dataLimitations.length > 0 && (
+          <Section title="Data limitation">
+            <ul className="space-y-2.5">
+              {r.dataLimitations.map((t) => (
+                <li key={t} className="flex gap-2.5">
+                  <InfoMark />
+                  <span>{t}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
         {r.lineItem && (
           <section>
             <button
@@ -171,7 +198,9 @@ export default function NodePanel({ node, result, onClose }: Props) {
                           <div className="flex justify-between gap-3">
                             <span className="text-slate-400">{li.label}</span>
                             <span className="shrink-0 tabular-nums text-slate-200">
-                              {li.value.toLocaleString("en-US")}
+                              {li.value === null
+                                ? "Not available"
+                                : li.value.toLocaleString("en-US")}
                             </span>
                           </div>
                           <p className="mt-0.5 text-[11.5px] leading-snug text-slate-600">
@@ -201,6 +230,60 @@ export default function NodePanel({ node, result, onClose }: Props) {
         )}
       </div>
     </aside>
+  );
+}
+
+function ContextGroupBlock({ group }: { group: ContextGroup }) {
+  return (
+    <Section title={group.title}>
+      <ul className="space-y-2.5">
+        {group.rows.map((row) => (
+          <li key={row.label}>
+            <div className="flex justify-between gap-3">
+              <span className="text-slate-400">{row.label}</span>
+              <span
+                className={`shrink-0 tabular-nums ${
+                  row.muted ? "text-slate-500" : "text-slate-200"
+                }`}
+              >
+                {row.value}
+              </span>
+            </div>
+            {row.note && (
+              <p className="mt-0.5 text-[11.5px] leading-snug text-slate-600">
+                {row.note}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+      {group.source && (
+        <p className="mt-3 text-[11.5px] leading-snug text-slate-600">
+          {group.source}
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function InfoMark() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      className="mt-1 shrink-0"
+      aria-hidden
+    >
+      <circle cx="7" cy="7" r="5.6" fill="none" stroke="#94a3b8" strokeWidth="1.4" />
+      <path
+        d="M7 6.2 L7 10"
+        stroke="#94a3b8"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <circle cx="7" cy="4.2" r="0.8" fill="#94a3b8" />
+    </svg>
   );
 }
 

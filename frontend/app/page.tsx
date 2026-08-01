@@ -131,10 +131,20 @@ export default function Home() {
                 value={money(result.summary.incremental_total_cost)}
                 bad={result.summary.incremental_total_cost > 0}
               />
+              {/* Not "starting salary": the figure is a median measured at
+                  a stated point after graduation, and calling it a starting
+                  salary implies a precision and a timing the data doesn't
+                  have. Also handles the null case — a missing comparison
+                  must not render as $0. */}
               <Affect
-                label="Starting salary"
-                value={money(result.summary.annual_salary_delta) + "/yr"}
-                bad={result.summary.annual_salary_delta < 0}
+                label="Earnings 1 yr after graduation"
+                value={
+                  result.summary.annual_salary_delta === null ||
+                  result.summary.annual_salary_delta === undefined
+                    ? "Not available"
+                    : money(result.summary.annual_salary_delta) + "/yr"
+                }
+                bad={(result.summary.annual_salary_delta ?? 0) < 0}
               />
             </div>
           )}
@@ -245,7 +255,7 @@ function PathCard({
   items,
 }: {
   title: string;
-  items: { label: string; value: number }[];
+  items: { label: string; value: number | null }[];
 }) {
   return (
     <div className="bg-[#0a0e17] px-5 py-4">
@@ -260,11 +270,19 @@ function PathCard({
             <div key={li.label} className="flex justify-between gap-4 text-[12.5px]">
               <dt className="text-slate-500">{li.label}</dt>
               <dd className="shrink-0 tabular-nums text-slate-200">
-                {isMoney
-                  ? money(li.value)
-                  : isSemesters
-                    ? `${li.value} semesters`
-                    : li.value}
+                {/* A null value means the figure genuinely isn't published
+                    (federal privacy suppression, or no data). Say that
+                    plainly — rendering 0 or a dash would read as a real
+                    number, or as a rendering bug. */}
+                {li.value === null ? (
+                  <span className="text-slate-500">Not available</span>
+                ) : isMoney ? (
+                  money(li.value)
+                ) : isSemesters ? (
+                  `${li.value} semesters`
+                ) : (
+                  li.value
+                )}
               </dd>
             </div>
           );

@@ -53,6 +53,41 @@ export interface ResolvedNode {
   known?: string[];
   /** What would fill this in, shown as "What we still need". */
   stillNeed?: string[];
+  /**
+   * Caveats about the DATA itself, shown as a always-visible "Data
+   * limitation" section rather than buried inside the collapsible
+   * provenance block. A limitation the student never opens is a
+   * limitation that wasn't really disclosed.
+   *
+   * Text comes from the API response, never hardcoded here — different
+   * majors carry different caveats and a single universal warning would
+   * be wrong for most of them.
+   */
+  dataLimitations?: string[];
+  /**
+   * Extra figures worth showing but NOT part of the calculation — e.g.
+   * the 4- and 5-year earnings trajectory. Generic on purpose so any node
+   * can supply supporting numbers without the panel needing to know which
+   * node it's rendering.
+   */
+  contextGroups?: ContextGroup[];
+}
+
+export interface ContextRow {
+  label: string;
+  /** Pre-formatted for display, or the plain-English absence text. */
+  value: string;
+  /** Why a value is absent, when it is. */
+  note?: string;
+  /** Renders muted when the figure isn't a real number. */
+  muted?: boolean;
+}
+
+export interface ContextGroup {
+  title: string;
+  rows: ContextRow[];
+  /** Source line shown under the group. */
+  source?: string;
 }
 
 export interface NodeDef {
@@ -86,6 +121,86 @@ const semesters = (n: number) => {
 };
 
 const credits = (n: number) => `${n} credit${n === 1 ? "" : "s"}`;
+
+// --- earnings helpers ---------------------------------------------------
+// These read from result.earnings_context, which the backend builds from
+// the processed College Scorecard file. Nothing about any specific major is
+// encoded here: whether a figure is shared across programs, suppressed, or
+// missing is the data's business, not this file's.
+
+/** Plain-English caveats for the majors involved, straight from the API. */
+function earningsLimitations(r: CalcResult, onlyMajors?: string[]): string[] {
+  const contexts = onlyMajors
+    ? r.earnings_context.filter((c) => onlyMajors.includes(c.major))
+    : r.earnings_context;
+
+  const out: string[] = [];
+
+  // Who the figures actually describe. Identical across majors, so it's
+  // stated once rather than repeated per program.
+  const population = contexts.find((c) => c.population_note)?.population_note;
+  if (population) out.push(population);
+
+  // Where one federal category covers more than the single program the
+  // student picked. Only present when it genuinely applies.
+  for (const c of contexts) {
+    if (c.covers) out.push(`${c.major}: ${c.covers}`);
+  }
+
+  // Figures that exist but can't be shown, and figures that don't exist.
+  // Kept as distinct states — they mean different things.
+  for (const c of contexts) {
+    for (const t of c.trajectory) {
+      if (t.status !== "available" && t.status_note) {
+        out.push(`${c.major} — ${t.label.toLowerCase()}: ${t.status_note}`);
+      }
+    }
+  }
+
+  return out;
+}
+
+/** The 1/4/5-year trajectory for one major, formatted for display. */
+function earningsGroup(r: CalcResult, major: string): ContextGroup | undefined {
+  const ctx = r.earnings_context.find((c) => c.major === major);
+  if (!ctx) return undefined;
+
+  return {
+    title: major,
+    source: `${ctx.source} · ${ctx.source_date}`,
+    rows: ctx.trajectory.map((t) => {
+      if (t.status === "available" && t.value !== null) {
+        return { label: t.label, value: money(t.value) };
+      }
+      // Never $0, and the two absence states stay distinguishable.
+      return {
+        label: t.label,
+        value:
+          t.status === "privacy_suppressed" ? "Not published" : "Not reported",
+        note: t.status_note ?? undefined,
+        muted: true,
+      };
+    }),
+  };
+}
+
+/** One sentence comparing the two majors, or an honest note if we can't. */
+function earningsComparison(r: CalcResult): string {
+  const delta = r.summary.annual_salary_delta;
+  const cur = r.summary.current_major;
+  const pro = r.summary.prospective_major;
+
+  if (delta === null || delta === undefined) {
+    return `Fork can't compare early-career earnings for ${cur} and ${pro} because at least one of them has no published figure.`;
+  }
+  if (delta === 0) {
+    return `Graduates of ${cur} and ${pro} report the same median earnings one year after graduating.`;
+  }
+  const dir = delta > 0 ? "more" : "less";
+  return `One year after graduating, ${pro} graduates report a median of ${money(
+    Math.abs(delta),
+  )} ${dir} per year than ${cur} graduates. This is a median across a group, not a prediction for any individual.`;
+}
 
 /** A node the platform cannot answer yet. */
 const locked = (reason: string) => (): ResolvedNode => ({
@@ -125,8 +240,14 @@ export const NODES: NodeDef[] = [
             lineItem: findLineItem(r, "Estimated total difference"),
             derivedFrom: [
               findLineItem(r, "Additional tuition"),
-              findLineItem(r, "Earnings delayed"),
+              // Label renamed in Stage 4. The old fragment silently matched
+              // nothing, so this node was quietly showing one input instead
+              // of two — no error, just a missing row.
+              findLineItem(r, "Estimated early-career income delayed"),
             ].filter(Boolean) as LineItem[],
+            dataLimitations: earningsLimitations(r, [
+              r.summary.current_major,
+            ]),
             known: [
               `Current major: ${r.summary.current_major}`,
               `Considering: ${r.summary.prospective_major}`,
@@ -181,7 +302,7 @@ export const NODES: NodeDef[] = [
         li?.source.toLowerCase().includes("estimate");
       return {
         state: isEstimate ? "needs_info" : "completed",
-        display: li ? credits(li.value) : undefined,
+        display: li && li.value !== null ? credits(li.value) : undefined,
         lineItem: li,
         reason: isEstimate
           ? "This figure is your own estimate. A what-if degree audit run against the new major would replace it with the registrar's number."
@@ -403,20 +524,46 @@ export const NODES: NodeDef[] = [
     parent: "root",
     question: "What do graduates of each major earn?",
     icon: "briefcase",
-    resolve: (r) =>
-      !r
-        ? idle
-        : {
-            state: r.summary.annual_salary_delta < 0 ? "at_risk" : "completed",
-            display: money(r.summary.annual_salary_delta) + "/yr",
-            lineItem: findLineItem(r, "Annual starting salary difference"),
-            // The two medians this was subtracted from. Without them the
-            // citation points at figures the student can't see.
-            derivedFrom: [
-              findLineItem(r, `Median starting salary — ${r.summary.current_major}`),
-              findLineItem(r, `Median starting salary — ${r.summary.prospective_major}`),
-            ].filter(Boolean) as LineItem[],
-          },
+    resolve: (r) => {
+      if (!r) return idle;
+      const delta = r.summary.annual_salary_delta;
+      const li = findLineItem(r, "Difference in early-career earnings");
+      return {
+        // A missing comparison isn't a negative one — don't render it as
+        // though switching costs earnings when we simply don't know.
+        state:
+          delta === null || delta === undefined
+            ? "needs_info"
+            : delta < 0
+              ? "at_risk"
+              : "completed",
+        display:
+          delta === null || delta === undefined
+            ? undefined
+            : money(delta) + "/yr",
+        lineItem: li,
+        derivedFrom: [
+          findLineItem(
+            r,
+            `Median earnings 1 year after graduation — ${r.summary.current_major}`,
+          ),
+          findLineItem(
+            r,
+            `Median earnings 1 year after graduation — ${r.summary.prospective_major}`,
+          ),
+        ].filter(Boolean) as LineItem[],
+        known: [
+          `Current major: ${r.summary.current_major}`,
+          `Considering: ${r.summary.prospective_major}`,
+        ],
+        reason: earningsComparison(r),
+        contextGroups: [
+          earningsGroup(r, r.summary.current_major),
+          earningsGroup(r, r.summary.prospective_major),
+        ].filter(Boolean) as ContextGroup[],
+        dataLimitations: earningsLimitations(r),
+      };
+    },
   },
   {
     id: "salary_outlook",
@@ -426,19 +573,38 @@ export const NODES: NodeDef[] = [
     branch: "career",
     kind: "leaf",
     parent: "career",
-    question: "What's the median starting salary difference?",
-    resolve: (r) =>
-      !r
-        ? idle
-        : {
-            state: r.summary.annual_salary_delta < 0 ? "at_risk" : "completed",
-            display: money(r.summary.annual_salary_delta) + "/yr",
-            lineItem: findLineItem(r, "Annual starting salary difference"),
-            derivedFrom: [
-              findLineItem(r, `Median starting salary — ${r.summary.current_major}`),
-              findLineItem(r, `Median starting salary — ${r.summary.prospective_major}`),
-            ].filter(Boolean) as LineItem[],
-          },
+    question:
+      "What do graduates of the major I'm considering earn early on?",
+    resolve: (r) => {
+      if (!r) return idle;
+      // Headline is the PROSPECTIVE major's own figure rather than a
+      // difference, so the number on screen belongs to one named program
+      // and one named time point instead of being an unattributed delta.
+      const pro = r.summary.prospective_major;
+      const li = findLineItem(
+        r,
+        `Median earnings 1 year after graduation — ${pro}`,
+      );
+      const available = li != null && li.value !== null;
+      return {
+        state: available ? "completed" : "needs_info",
+        display: available ? money(li!.value as number) : undefined,
+        lineItem: li,
+        known: [
+          `Major shown: ${pro}`,
+          "Time point: 1 year after graduation",
+          `Compared against: ${r.summary.current_major}`,
+        ],
+        reason: available
+          ? earningsComparison(r)
+          : (li?.status_note ??
+            "No published earnings figure for this program."),
+        contextGroups: [earningsGroup(r, pro)].filter(
+          Boolean,
+        ) as ContextGroup[],
+        dataLimitations: earningsLimitations(r, [pro]),
+      };
+    },
   },
   {
     id: "job_market",
