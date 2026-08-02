@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { forwardRef, useId, useRef, useState } from "react";
 import DecisionMap from "@/components/DecisionMap";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
 import { NODES_BY_ID, payDelta } from "@/lib/nodes";
-import { CalcResult, calculateChangeMajor } from "@/lib/types";
+import { ApiError, CalcResult, calculateChangeMajor } from "@/lib/types";
+import { validateCreditsPair } from "@/lib/validation";
 
 /**
  * Major keys have to match the reference JSON exactly. Listed here rather
@@ -33,29 +34,72 @@ const money = (n: number) =>
 export default function Home() {
   const [currentMajor, setCurrentMajor] = useState("computer_science");
   const [prospectiveMajor, setProspectiveMajor] = useState("information_technology");
-  const [completed, setCompleted] = useState(72);
-  const [transferable, setTransferable] = useState(66);
+  // Raw text, not number — needed to control exactly what's displayed
+  // (leading-zero normalization) and to represent "user typed something
+  // invalid" as a real, visible state rather than silently coercing to 0.
+  const [completedRaw, setCompletedRaw] = useState("72");
+  const [transferableRaw, setTransferableRaw] = useState("66");
+  const [touched, setTouched] = useState<{ completed: boolean; transferable: boolean }>({
+    completed: false,
+    transferable: false,
+  });
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const [result, setResult] = useState<CalcResult | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function run() {
+  const completedRef = useRef<HTMLInputElement>(null);
+  const transferableRef = useRef<HTMLInputElement>(null);
+
+  const validation = validateCreditsPair(completedRaw, transferableRaw);
+  // A field's error only SHOWS once the person has interacted with it (or
+  // tried to submit) — otherwise every field would flash "Enter a number"
+  // before anyone's typed anything, which is just noise on first load.
+  const showCompletedError = (touched.completed || submitAttempted) && validation.completed.error;
+  const showTransferableError =
+    (touched.transferable || submitAttempted) && validation.transferable.error;
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitAttempted(true);
+
+    if (!validation.isValid) {
+      // Focus the first actually-invalid field, completed before
+      // transferable — matches field order in the form.
+      if (validation.completed.error) {
+        completedRef.current?.focus();
+      } else if (validation.transferable.error) {
+        transferableRef.current?.focus();
+      }
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       const data = await calculateChangeMajor({
         current_major: currentMajor,
         prospective_major: prospectiveMajor,
-        credits_completed: completed,
-        credits_transferable: transferable,
+        credits_completed: validation.completed.value as number,
+        credits_transferable: validation.transferable.value as number,
       });
       setResult(data);
       setSelectedId("root");
+      setSubmitAttempted(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-      setResult(null);
+      // Deliberately does NOT touch result/selectedId. A failed request —
+      // whether it's a network blip or a server-side rejection — must
+      // never wipe out a map the person already successfully built. Only
+      // a NEW success (above) is allowed to replace what's shown.
+      const message = e instanceof ApiError ? e.message : "Something went wrong.";
+      setError(message);
+      if (e instanceof ApiError && e.field === "credits_transferable") {
+        transferableRef.current?.focus();
+      } else if (e instanceof ApiError && e.field === "credits_completed") {
+        completedRef.current?.focus();
+      }
     } finally {
       setLoading(false);
     }
@@ -81,33 +125,62 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="space-y-4 border-t border-white/[0.07] pt-5">
-            <Select label="Current major" value={currentMajor} onChange={setCurrentMajor} />
-            <Select label="Considering" value={prospectiveMajor} onChange={setProspectiveMajor} />
-            <NumberField
-              label="Credits completed"
-              value={completed}
-              onChange={setCompleted}
-              hint="Courses you've finished and passed."
-            />
-            <NumberField
-              label="Credits that transfer"
-              value={transferable}
-              onChange={setTransferable}
-              hint="Counting toward the new degree, electives included."
-            />
-          </div>
+          <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+            <div className="space-y-4 border-t border-white/[0.07] pt-5">
+              <Select label="Current major" value={currentMajor} onChange={setCurrentMajor} />
+              <Select label="Considering" value={prospectiveMajor} onChange={setProspectiveMajor} />
+              <NumberField
+                ref={completedRef}
+                label="Credits completed"
+                displayValue={validation.completed.display}
+                onChange={setCompletedRaw}
+                onBlur={() => setTouched((t) => ({ ...t, completed: true }))}
+                hint="Courses you've finished and passed."
+                error={showCompletedError ? validation.completed.error : null}
+              />
+              <NumberField
+                ref={transferableRef}
+                label="Credits that transfer"
+                displayValue={validation.transferable.display}
+                onChange={setTransferableRaw}
+                onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
+                hint="Counting toward the new degree, electives included."
+                error={showTransferableError ? validation.transferable.error : null}
+              />
+            </div>
 
-          <button
-            onClick={run}
-            disabled={loading}
-            className="w-full rounded-xl bg-cyan-500/90 px-4 py-2.5 text-[13.5px] font-semibold text-slate-950 shadow-[0_0_22px_-6px_#22d3ee] transition hover:bg-cyan-400 disabled:opacity-50"
-          >
-            {loading ? "Calculating…" : "Show me the difference"}
-          </button>
+            <button
+              type="submit"
+              // Deliberately NOT the native `disabled` attribute: a
+              // disabled button never fires onClick/onSubmit at all,
+              // which would make "move focus to the invalid field after
+              // an attempted submission" impossible to satisfy — there'd
+              // be no attempt to react to. aria-disabled communicates the
+              // same state to assistive tech and gets the same visual
+              // treatment via the styles below, while handleSubmit
+              // itself remains the actual gate (it re-checks validity and
+              // returns early without calling the API). Only genuinely
+              // disabled during the real network request, where a second
+              // click really should do nothing.
+              disabled={loading}
+              aria-disabled={!validation.isValid || loading}
+              title={
+                !validation.isValid
+                  ? "Fix the highlighted field before calculating"
+                  : undefined
+              }
+              className={`w-full rounded-xl px-4 py-2.5 text-[13.5px] font-semibold text-slate-950 shadow-[0_0_22px_-6px_#22d3ee] transition ${
+                !validation.isValid || loading
+                  ? "cursor-not-allowed bg-cyan-500/40 opacity-50"
+                  : "cursor-pointer bg-cyan-500/90 hover:bg-cyan-400"
+              }`}
+            >
+              {loading ? "Calculating…" : "Show me the difference"}
+            </button>
+          </form>
 
           {error && (
-            <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-rose-300">
+            <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-rose-300">
               {error}
             </p>
           )}
@@ -320,33 +393,55 @@ function Select({
   );
 }
 
-function NumberField({
-  label,
-  value,
-  onChange,
-  hint,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  hint: string;
-}) {
+const NumberField = forwardRef<
+  HTMLInputElement,
+  {
+    label: string;
+    displayValue: string;
+    onChange: (v: string) => void;
+    onBlur: () => void;
+    hint: string;
+    error: string | null;
+  }
+>(function NumberField({ label, displayValue, onChange, onBlur, hint, error }, ref) {
+  const errorId = useId();
   return (
     <label className="block">
       <span className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
         {label}
       </span>
       <input
-        type="number"
-        min={0}
-        max={300}
-        value={value}
-        onChange={(e) => onChange(parseInt(e.target.value || "0", 10))}
-        className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#0e141f] px-3 py-2 text-[13px] tabular-nums text-slate-200 outline-none focus:border-cyan-400/50"
+        ref={ref}
+        // type="text" with inputMode="numeric" rather than type="number":
+        // native number inputs have inconsistent browser behavior around
+        // leading zeros, "-", and "e" (scientific notation is technically
+        // valid in a number input!), which fights the validation this
+        // field needs to do itself. inputMode still gives mobile users the
+        // numeric keypad.
+        type="text"
+        inputMode="numeric"
+        value={displayValue}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
+        className={`mt-1.5 w-full rounded-lg border bg-[#0e141f] px-3 py-2 text-[13px] tabular-nums text-slate-200 outline-none focus:border-cyan-400/50 ${
+          error ? "border-rose-500/60 focus:border-rose-500/60" : "border-white/10"
+        }`}
       />
-      <span className="mt-1 block text-[11px] leading-relaxed text-slate-600">
-        {hint}
-      </span>
+      {error ? (
+        <span
+          id={errorId}
+          role="alert"
+          className="mt-1 block text-[11px] leading-relaxed text-rose-400"
+        >
+          {error}
+        </span>
+      ) : (
+        <span className="mt-1 block text-[11px] leading-relaxed text-slate-600">
+          {hint}
+        </span>
+      )}
     </label>
   );
-}
+});

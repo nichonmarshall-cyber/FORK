@@ -120,40 +120,112 @@ export interface CalcRequest {
   institution_id?: string;
 }
 
+/**
+ * Every distinct failure shape the API (or the network under it) can
+ * produce, mapped to exactly one user-facing sentence each. This is the
+ * single place that decides what a person sees when something goes
+ * wrong — nowhere else should reach into a response body and build its
+ * own message, or a raw backend shape will eventually leak through some
+ * other path.
+ *
+ * Kept as a pure function of (response status, parsed body, thrown
+ * error) so it's testable without a live server.
+ */
+export interface ParsedApiError {
+  message: string;
+  /** Which field a validation error points at, when there is one — lets
+   * the form move focus to the right input. */
+  field?: string;
+}
+
+export function parseApiError(input: {
+  status?: number;
+  body?: unknown;
+  networkError?: unknown;
+}): ParsedApiError {
+  const { status, body, networkError } = input;
+
+  // The request never reached the server, or the response wasn't JSON —
+  // fetch() throwing, DNS failure, the backend being down entirely.
+  if (networkError || status === undefined) {
+    if (networkError) {
+      // Deliberate: technical detail stays in the dev console, never in
+      // the UI. See requirement 5.
+      console.error("Fork: network error calling the API", networkError);
+    }
+    return {
+      message: "We couldn't calculate the difference right now. Please try again.",
+    };
+  }
+
+  const detail = (body as { detail?: unknown } | null)?.detail;
+
+  // Shape 1: structured backend errors, all of the form
+  // { status: "...", message: "...", ... }. Covers validation_error
+  // (this fix), clarification_required and unsupported_program (major
+  // resolution, added earlier).
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const d = detail as { status?: string; message: string; errors?: { field?: string; message: string }[] };
+    const field = d.errors?.[0]?.field;
+    return { message: d.message, field };
+  }
+
+  // Shape 2: a plain string detail. FastAPI emits this for its own
+  // built-in errors (e.g. a 404 from an unknown institution_id) — these
+  // are already short and written for a human, so pass them through.
+  if (typeof detail === "string") {
+    return { message: detail };
+  }
+
+  // Shape 3: something came back, but not a shape we recognize — an old
+  // deploy, a proxy error page, a future backend change we haven't
+  // updated this parser for. Never show it raw.
+  console.error("Fork: unrecognized API error shape", { status, body });
+  if (status >= 500) {
+    return {
+      message: "We couldn't calculate the difference right now. Please try again.",
+    };
+  }
+  return {
+    message: "Something went wrong with that request. Please check your inputs and try again.",
+  };
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export async function calculateChangeMajor(
   body: CalcRequest,
 ): Promise<CalcResult> {
-  const res = await fetch(`${API_BASE}/decision-paths/change-major/calculate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/decision-paths/change-major/calculate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (networkError) {
+    const parsed = parseApiError({ networkError });
+    throw new ApiError(parsed.message, parsed.field);
+  }
 
   if (!res.ok) {
-    // The backend sends real validation messages. Show them rather than a
-    // generic failure — "credits_transferable cannot exceed credits_completed"
-    // is more useful than "something went wrong".
-    //
-    // As of Stage 3, `detail` can also be a structured object rather than
-    // a string, for the two major-resolution special cases:
-    //   { status: "clarification_required", message, options }
-    //   { status: "unsupported_program", message }
-    // Both carry a human-readable `message`, so surface that instead of
-    // stringifying the whole object.
-    const errorBody = await res.json().catch(() => null);
-    const detail = errorBody?.detail;
-    const message =
-      typeof detail === "string"
-        ? detail
-        : typeof detail?.message === "string"
-          ? detail.message
-          : `Request failed (${res.status})`;
-    throw new Error(message);
+    const parsedBody = await res.json().catch(() => null);
+    const parsed = parseApiError({ status: res.status, body: parsedBody });
+    throw new ApiError(parsed.message, parsed.field);
   }
 
   return res.json();
+}
+
+/** Thrown by calculateChangeMajor. Carries the already-cleaned message —
+ * callers should never need to inspect a response body themselves. */
+export class ApiError extends Error {
+  field?: string;
+  constructor(message: string, field?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.field = field;
+  }
 }
 
 /** Find a line item by a distinctive fragment of its label. */

@@ -13,7 +13,7 @@ load_dotenv()  # load .env so the API key is set before anything below
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from data_loading.loader import UnknownInstitution, build_reference_data
 from decision_paths.change_major import engine as change_major_engine
@@ -52,6 +52,32 @@ def _load_reference_data(institution_id: str = _DEFAULT_INSTITUTION_ID) -> dict:
     # old single-file read had: small files, and a number can be corrected
     # mid-demo without restarting the server.
     return build_reference_data(institution_id)
+
+
+def _clean_validation_errors(exc: ValidationError) -> list[dict]:
+    """
+    Turns Pydantic's ValidationError into a small, honest list of
+    {field, message} entries — no docs URLs, no `[type=value_error,
+    input_value=..., input_type=dict]` internals, no Python repr.
+
+    For a custom @field_validator that raises ValueError (our case here),
+    Pydantic wraps the original exception in err["ctx"]["error"] and adds
+    a "Value error, " prefix to err["msg"]. The original exception's own
+    str() is already the clean message the validator author wrote, so
+    that's what this prefers. Falls back to stripping the known boilerplate
+    prefix for error types that don't carry ctx.error (e.g. Pydantic's own
+    built-in type/range validators), so nothing here depends on every
+    error being hand-raised.
+    """
+    cleaned = []
+    for err in exc.errors():
+        original = err.get("ctx", {}).get("error")
+        message = str(original) if original is not None else err["msg"]
+        if message.startswith("Value error, "):
+            message = message[len("Value error, ") :]
+        field = ".".join(str(p) for p in err["loc"]) if err["loc"] else None
+        cleaned.append({"field": field, "message": message})
+    return cleaned
 
 
 def _resolve_major_or_raise(field: str, key: str) -> tuple[str, str | None]:
@@ -141,8 +167,19 @@ def calculate_change_major(request: ChangeMajorRequest):
 
     try:
         inputs = ChangeMajorInputs(**payload)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except ValidationError as e:
+        errors = _clean_validation_errors(e)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "validation_error",
+                # First error's message as the headline — the common case
+                # is one bad field, and the frontend can fall back to a
+                # generic message if it ever gets more than it expects.
+                "message": errors[0]["message"] if errors else "Invalid input.",
+                "errors": errors,
+            },
+        )
 
     try:
         reference_data = _load_reference_data(institution_id)

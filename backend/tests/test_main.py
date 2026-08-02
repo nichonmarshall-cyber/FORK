@@ -106,7 +106,36 @@ def test_nursing_returns_documented_unsupported_response():
     assert "UNT Health" in detail["message"]
 
 
-def test_specific_psychology_variant_works_without_clarification():
+def test_transferable_exceeding_completed_returns_clean_structured_error():
+    """The actual bug this test suite exists to catch: Pydantic's raw
+    ValidationError repr includes a docs URL and internal type/input_value
+    fields that used to leak straight to the client. This locks in the
+    replacement shape so a future refactor can't reintroduce str(e)."""
+    body = {**_VALID_BODY, "credits_completed": 72, "credits_transferable": 74}
+    res = client.post("/decision-paths/change-major/calculate", json=body)
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+
+    assert detail["status"] == "validation_error"
+    assert "credits_transferable cannot exceed credits_completed" in detail["message"]
+    assert detail["errors"][0]["field"] == "credits_transferable"
+
+    # The specific internals that used to leak. If any of these ever show
+    # up again, str(e) crept back in somewhere.
+    raw = res.text
+    assert "errors.pydantic.dev" not in raw
+    assert "type=value_error" not in raw
+    assert "input_value=" not in raw
+    assert "For further information visit" not in raw
+
+
+def test_negative_credits_returns_clean_structured_error():
+    body = {**_VALID_BODY, "credits_completed": -5}
+    res = client.post("/decision-paths/change-major/calculate", json=body)
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail["status"] == "validation_error"
+    assert "errors.pydantic.dev" not in res.text
     body = {
         "current_major": "psychology_ba",
         "prospective_major": "computer_science",
