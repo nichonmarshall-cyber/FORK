@@ -142,19 +142,15 @@ class ChangeMajorRequest(BaseModel):
     institution_id: str = _DEFAULT_INSTITUTION_ID
 
 
-@app.post("/decision-paths/change-major/calculate")
-def calculate_change_major(request: ChangeMajorRequest):
+def _run_change_major_calculation(request: ChangeMajorRequest) -> dict:
     """
-    Structured values in, projection out. No AI anywhere in this path.
-
-    Used by the manual-entry form, by direct testing, and as the fallback
-    if the AI layer has trouble during a demo. The conversation endpoint
-    also lands here once it has valid inputs.
+    Structured request in, formatted result out. Shared by the calculate
+    endpoint and the explain endpoint, so both ground their output in a
+    number the backend actually computed — not one a client claimed. A
+    client-supplied "here's the calculation, now explain it" payload would
+    let the grounding check faithfully verify a number that was never
+    real; recomputing here closes that off entirely.
     """
-    # institution_id selects which data file to calculate against — it's
-    # not an engine input, so it doesn't belong in ChangeMajorInputs. Pulled
-    # out explicitly rather than relying on pydantic's default extra-field
-    # handling, so this stays correct even if that default ever changes.
     payload = request.model_dump()
     institution_id = payload.pop("institution_id")
 
@@ -173,9 +169,6 @@ def calculate_change_major(request: ChangeMajorRequest):
             status_code=422,
             detail={
                 "status": "validation_error",
-                # First error's message as the headline — the common case
-                # is one bad field, and the frontend can fall back to a
-                # generic message if it ever gets more than it expects.
                 "message": errors[0]["message"] if errors else "Invalid input.",
                 "errors": errors,
             },
@@ -195,6 +188,88 @@ def calculate_change_major(request: ChangeMajorRequest):
     if warnings:
         formatted["warnings"] = warnings
     return formatted
+
+
+@app.post("/decision-paths/change-major/calculate")
+def calculate_change_major(request: ChangeMajorRequest):
+    """
+    Structured values in, projection out. No AI anywhere in this path.
+
+    Used by the manual-entry form, by direct testing, and as the fallback
+    if the AI layer has trouble during a demo. The conversation endpoint
+    also lands here once it has valid inputs.
+    """
+    return _run_change_major_calculation(request)
+
+
+class ExplainRequest(BaseModel):
+    """
+    Same shape as ChangeMajorRequest plus the question and which node is
+    currently open. Carries the calculation INPUTS, not a client-supplied
+    result — see _run_change_major_calculation's docstring for why this
+    endpoint recomputes rather than trusting a snapshot.
+    """
+
+    current_major: str
+    prospective_major: str
+    credits_completed: int
+    credits_transferable: int
+    credits_source: str = "Student-reported"
+    credits_transferable_source: str = "Student-reported"
+    credits_source_date: str = "Not stated"
+    credits_in_progress: int = 0
+    prospective_credits_required: int | None = None
+    prospective_credits_required_source: str | None = None
+    institution_id: str = _DEFAULT_INSTITUTION_ID
+
+    question: str
+    selected_node_id: str | None = None
+    selected_node_label: str | None = None
+    selected_node_question: str | None = None
+
+
+@app.post("/decision-paths/change-major/explain")
+def explain_change_major(request: ExplainRequest):
+    """
+    Answers a follow-up question about a Change Major calculation.
+
+    Recomputes the calculation from the same inputs the frontend already
+    has (rather than accepting a pre-built result), so the AI is grounded
+    against a number this backend just verified, not one the client
+    claimed. Requires ANTHROPIC_API_KEY; if the provider itself fails,
+    explain_decision() already falls back to a deterministic, always-true
+    summary rather than raising — so this endpoint has no separate
+    try/except for that. It never sees a raw provider exception.
+    """
+    from ai.interface import explain_decision
+
+    calc_request = ChangeMajorRequest(
+        current_major=request.current_major,
+        prospective_major=request.prospective_major,
+        credits_completed=request.credits_completed,
+        credits_transferable=request.credits_transferable,
+        credits_source=request.credits_source,
+        credits_transferable_source=request.credits_transferable_source,
+        credits_source_date=request.credits_source_date,
+        credits_in_progress=request.credits_in_progress,
+        prospective_credits_required=request.prospective_credits_required,
+        prospective_credits_required_source=request.prospective_credits_required_source,
+        institution_id=request.institution_id,
+    )
+    formatted = _run_change_major_calculation(calc_request)
+
+    result = explain_decision(
+        formatted,
+        question=request.question,
+        node_id=request.selected_node_id,
+        node_label=request.selected_node_label,
+        node_question=request.selected_node_question,
+    )
+    return {
+        "answer": result["answer"],
+        "used_fallback": result["used_fallback"],
+        "selected_node_id": request.selected_node_id,
+    }
 
 
 class ConversationRequest(BaseModel):

@@ -121,6 +121,29 @@ export interface CalcRequest {
 }
 
 /**
+ * Everything /explain needs: the same inputs /calculate takes (the
+ * backend recomputes the result itself rather than trusting a
+ * client-supplied one — see main.py's _run_change_major_calculation),
+ * plus the question and which node is currently open.
+ */
+export interface ExplainRequest extends CalcRequest {
+  question: string;
+  selected_node_id?: string;
+  selected_node_label?: string;
+  selected_node_question?: string;
+}
+
+export interface ExplainResponse {
+  answer: string;
+  // True when the AI couldn't produce a grounded answer twice in a row
+  // and a deterministic template was used instead. Still a real,
+  // trustworthy answer — just less conversational — so the UI shouldn't
+  // treat this as an error, only as a mild "kept it simple" signal.
+  used_fallback: boolean;
+  selected_node_id: string | null;
+}
+
+/**
  * Every distinct failure shape the API (or the network under it) can
  * produce, mapped to exactly one user-facing sentence each. This is the
  * single place that decides what a person sees when something goes
@@ -226,6 +249,30 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.field = field;
   }
+}
+
+export async function explainDecision(
+  body: ExplainRequest,
+): Promise<ExplainResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/decision-paths/change-major/explain`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (networkError) {
+    const parsed = parseApiError({ networkError });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  if (!res.ok) {
+    const parsedBody = await res.json().catch(() => null);
+    const parsed = parseApiError({ status: res.status, body: parsedBody });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  return res.json();
 }
 
 /** Find a line item by a distinctive fragment of its label. */

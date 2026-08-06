@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useId, useRef, useState } from "react";
+import AskFork from "@/components/AskFork";
 import DecisionMap from "@/components/DecisionMap";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
@@ -258,6 +259,28 @@ export default function Home() {
               />
             </div>
           )}
+
+          <div className="border-t border-white/[0.07] p-4">
+            <AskFork
+              result={result}
+              calcInputs={{
+                current_major: currentMajor,
+                prospective_major: prospectiveMajor,
+                credits_completed: validation.completed.value ?? 0,
+                credits_transferable: validation.transferable.value ?? 0,
+              }}
+              selectedNode={
+                selectedNode
+                  ? {
+                      id: selectedNode.id,
+                      label: selectedNode.label,
+                      question: selectedNode.question,
+                    }
+                  : null
+              }
+              onSelectNode={setSelectedId}
+            />
+          </div>
         </section>
 
         {/* ---- Detail ---- */}
@@ -393,17 +416,27 @@ function Select({
   );
 }
 
-const NumberField = forwardRef<
-  HTMLInputElement,
-  {
-    label: string;
-    displayValue: string;
-    onChange: (v: string) => void;
-    onBlur: () => void;
-    hint: string;
-    error: string | null;
-  }
->(function NumberField({ label, displayValue, onChange, onBlur, hint, error }, ref) {
+interface NumberFieldProps {
+  label: string;
+  displayValue: string;
+  onChange: (v: string) => void;
+  onBlur: () => void;
+  hint: string;
+  error: string | null;
+}
+
+// forwardRef called with NO explicit generic arguments on purpose: a
+// call like `forwardRef<A, B>(...)` — two comma-separated type
+// arguments — is a known ambiguity in .tsx files (the parser has to
+// decide whether `<A,` starts a generic call or a JSX element), and it
+// parses differently across TypeScript versions. Passing an already-typed
+// function instead lets TypeScript infer both type parameters from the
+// function's own signature, which sidesteps the ambiguous syntax
+// entirely rather than trying to work around it.
+function NumberFieldInner(
+  { label, displayValue, onChange, onBlur, hint, error }: NumberFieldProps,
+  ref: React.ForwardedRef<HTMLInputElement>,
+) {
   const errorId = useId();
   return (
     <label className="block">
@@ -412,12 +445,6 @@ const NumberField = forwardRef<
       </span>
       <input
         ref={ref}
-        // type="text" with inputMode="numeric" rather than type="number":
-        // native number inputs have inconsistent browser behavior around
-        // leading zeros, "-", and "e" (scientific notation is technically
-        // valid in a number input!), which fights the validation this
-        // field needs to do itself. inputMode still gives mobile users the
-        // numeric keypad.
         type="text"
         inputMode="numeric"
         value={displayValue}
@@ -444,4 +471,6 @@ const NumberField = forwardRef<
       )}
     </label>
   );
-});
+}
+
+const NumberField = forwardRef(NumberFieldInner);

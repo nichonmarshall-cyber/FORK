@@ -11,6 +11,8 @@ back as structured, actionable responses rather than a generic 422 or an
 engine ValueError.
 """
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -145,3 +147,67 @@ def test_negative_credits_returns_clean_structured_error():
     res = client.post("/decision-paths/change-major/calculate", json=body)
     assert res.status_code == 200
     assert "warnings" not in res.json()
+
+
+# --- /decision-paths/change-major/explain ------------------------------
+
+_EXPLAIN_BODY = {**_VALID_BODY, "question": "Explain the biggest difference"}
+
+
+def test_explain_returns_a_grounded_answer():
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = "Switching costs more overall based on the tuition and timeline figures."
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert res.status_code == 200
+    data = res.json()
+    assert set(data.keys()) == {"answer", "used_fallback", "selected_node_id"}
+    assert data["used_fallback"] is False
+    assert len(data["answer"]) > 0
+
+
+def test_explain_passes_selected_node_context_to_the_model():
+    body = {
+        **_EXPLAIN_BODY,
+        "selected_node_id": "financial",
+        "selected_node_label": "Financial Impact",
+        "selected_node_question": "What does switching cost?",
+    }
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = "The additional cost comes from tuition and delayed income."
+        res = client.post("/decision-paths/change-major/explain", json=body)
+    assert res.status_code == 200
+    assert res.json()["selected_node_id"] == "financial"
+    system_arg = mock_call.call_args[0][0]
+    assert "Financial Impact" in system_arg
+
+
+def test_explain_falls_back_gracefully_when_the_provider_fails():
+    """A provider exception must never reach the client as a raw error —
+    explain_decision's internal fallback should produce a normal 200
+    response instead."""
+    with patch("ai.interface._call_model", side_effect=RuntimeError("connection reset")):
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["used_fallback"] is True
+    assert "RuntimeError" not in data["answer"]
+    assert "connection reset" not in data["answer"]
+    assert "Traceback" not in res.text
+
+
+def test_explain_rejects_invalid_inputs_the_same_way_calculate_does():
+    """The explain endpoint recomputes the calculation from inputs rather
+    than trusting a client-supplied result, so bad inputs must fail with
+    the same clean validation error /calculate would give — not a
+    different, AI-specific error shape."""
+    body = {**_EXPLAIN_BODY, "credits_completed": -5}
+    res = client.post("/decision-paths/change-major/explain", json=body)
+    assert res.status_code == 422
+    assert res.json()["detail"]["status"] == "validation_error"
+
+
+def test_explain_never_leaks_raw_errors_regardless_of_failure_mode():
+    with patch("ai.interface._call_model", side_effect=Exception("some internal detail")):
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert "some internal detail" not in res.text
+    assert "Exception" not in res.text
