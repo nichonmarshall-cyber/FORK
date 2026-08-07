@@ -202,6 +202,18 @@ def calculate_change_major(request: ChangeMajorRequest):
     return _run_change_major_calculation(request)
 
 
+class AvailableNode(BaseModel):
+    """One entry from the frontend's own node list — id plus its display
+    label. Sent with every /explain request so the backend can (a) tell
+    the model which node ids genuinely exist, and (b) filter the model's
+    related_node_ids response against that same list. The map's node ids
+    are defined once, in the frontend; this avoids a second, driftable
+    copy of that list in Python."""
+
+    id: str
+    label: str
+
+
 class ExplainRequest(BaseModel):
     """
     Same shape as ChangeMajorRequest plus the question and which node is
@@ -226,20 +238,24 @@ class ExplainRequest(BaseModel):
     selected_node_id: str | None = None
     selected_node_label: str | None = None
     selected_node_question: str | None = None
+    available_nodes: list[AvailableNode] = []
 
 
 @app.post("/decision-paths/change-major/explain")
 def explain_change_major(request: ExplainRequest):
     """
-    Answers a follow-up question about a Change Major calculation.
+    Answers a follow-up question about a Change Major calculation with a
+    structured explanation (direct answer, prioritized key points and
+    limitations, what the comparison is still useful for, an optional
+    next step, and which map nodes it touches on).
 
     Recomputes the calculation from the same inputs the frontend already
     has (rather than accepting a pre-built result), so the AI is grounded
     against a number this backend just verified, not one the client
     claimed. Requires ANTHROPIC_API_KEY; if the provider itself fails,
     explain_decision() already falls back to a deterministic, always-true
-    summary rather than raising — so this endpoint has no separate
-    try/except for that. It never sees a raw provider exception.
+    structured summary rather than raising — so this endpoint has no
+    separate try/except for that. It never sees a raw provider exception.
     """
     from ai.interface import explain_decision
 
@@ -264,11 +280,17 @@ def explain_change_major(request: ExplainRequest):
         node_id=request.selected_node_id,
         node_label=request.selected_node_label,
         node_question=request.selected_node_question,
+        available_nodes=[n.model_dump() for n in request.available_nodes],
     )
+    explanation = result["explanation"]
     return {
-        "answer": result["answer"],
+        "direct_answer": explanation.direct_answer,
+        "key_points": [kp.model_dump() for kp in explanation.key_points],
+        "limitations": [lim.model_dump() for lim in explanation.limitations],
+        "still_useful_for": explanation.still_useful_for,
+        "next_step": explanation.next_step.model_dump() if explanation.next_step else None,
+        "related_node_ids": explanation.related_node_ids,
         "used_fallback": result["used_fallback"],
-        "selected_node_id": request.selected_node_id,
     }
 
 

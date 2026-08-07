@@ -11,6 +11,7 @@ back as structured, actionable responses rather than a generic 422 or an
 engine ValueError.
 """
 
+import json
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -152,33 +153,87 @@ def test_negative_credits_returns_clean_structured_error():
 # --- /decision-paths/change-major/explain ------------------------------
 
 _EXPLAIN_BODY = {**_VALID_BODY, "question": "Explain the biggest difference"}
+_AVAILABLE_NODES = [
+    {"id": "financial", "label": "Financial Impact"},
+    {"id": "salary_outlook", "label": "Salary Outlook"},
+]
+
+_GOOD_EXPLAIN_JSON = json.dumps(
+    {
+        "direct_answer": "Switching costs more overall based on the tuition and timeline figures.",
+        "key_points": [{"title": "Additional cost", "explanation": "Tuition and timeline both increase."}],
+        "limitations": [],
+        "still_useful_for": ["Comparing tuition impact"],
+        "next_step": None,
+        "related_node_ids": [],
+    }
+)
 
 
-def test_explain_returns_a_grounded_answer():
+def test_explain_returns_a_structured_grounded_answer():
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = "Switching costs more overall based on the tuition and timeline figures."
+        mock_call.return_value = _GOOD_EXPLAIN_JSON
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     assert res.status_code == 200
     data = res.json()
-    assert set(data.keys()) == {"answer", "used_fallback", "selected_node_id"}
+    assert set(data.keys()) == {
+        "direct_answer",
+        "key_points",
+        "limitations",
+        "still_useful_for",
+        "next_step",
+        "related_node_ids",
+        "used_fallback",
+    }
     assert data["used_fallback"] is False
-    assert len(data["answer"]) > 0
+    assert len(data["direct_answer"]) > 0
+    assert data["key_points"][0]["title"] == "Additional cost"
 
 
-def test_explain_passes_selected_node_context_to_the_model():
+def test_explain_omits_empty_sections_rather_than_padding_them():
+    """The model returning empty lists for limitations/still_useful_for
+    (nothing relevant to this question) must come through as empty, not
+    invented content to fill the section."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = _GOOD_EXPLAIN_JSON
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    data = res.json()
+    assert data["limitations"] == []
+    assert data["next_step"] is None
+
+
+def test_explain_passes_selected_node_and_available_nodes_to_the_model():
     body = {
         **_EXPLAIN_BODY,
         "selected_node_id": "financial",
         "selected_node_label": "Financial Impact",
         "selected_node_question": "What does switching cost?",
+        "available_nodes": _AVAILABLE_NODES,
     }
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = "The additional cost comes from tuition and delayed income."
+        mock_call.return_value = _GOOD_EXPLAIN_JSON
         res = client.post("/decision-paths/change-major/explain", json=body)
     assert res.status_code == 200
-    assert res.json()["selected_node_id"] == "financial"
     system_arg = mock_call.call_args[0][0]
     assert "Financial Impact" in system_arg
+    assert "salary_outlook" in system_arg  # the full valid-id list reaches the prompt
+
+
+def test_explain_filters_a_related_node_id_the_model_invented():
+    body = {**_EXPLAIN_BODY, "available_nodes": _AVAILABLE_NODES}
+    invented = json.dumps(
+        {
+            "direct_answer": "Answer.",
+            "key_points": [],
+            "limitations": [],
+            "still_useful_for": [],
+            "next_step": None,
+            "related_node_ids": ["salary_outlook", "totally_made_up"],
+        }
+    )
+    with patch("ai.interface._call_model", return_value=invented):
+        res = client.post("/decision-paths/change-major/explain", json=body)
+    assert res.json()["related_node_ids"] == ["salary_outlook"]
 
 
 def test_explain_falls_back_gracefully_when_the_provider_fails():
@@ -190,9 +245,17 @@ def test_explain_falls_back_gracefully_when_the_provider_fails():
     assert res.status_code == 200
     data = res.json()
     assert data["used_fallback"] is True
-    assert "RuntimeError" not in data["answer"]
-    assert "connection reset" not in data["answer"]
+    assert len(data["direct_answer"]) > 0
+    assert "RuntimeError" not in res.text
+    assert "connection reset" not in res.text
     assert "Traceback" not in res.text
+
+
+def test_explain_falls_back_on_invalid_json_from_the_model():
+    with patch("ai.interface._call_model", return_value="Not JSON at all."):
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert res.status_code == 200
+    assert res.json()["used_fallback"] is True
 
 
 def test_explain_rejects_invalid_inputs_the_same_way_calculate_does():

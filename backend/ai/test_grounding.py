@@ -9,6 +9,7 @@ loop directly, mocking `_call_model` so nothing here makes a real network
 call or needs an API key.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -260,26 +261,154 @@ def test_provider_failure_on_retry_uses_fallback_without_raising(sample_result):
 
 # --- explain_decision (the public function main.py calls) -------------------
 
+_AVAILABLE_NODES = [
+    {"id": "financial", "label": "Financial Impact"},
+    {"id": "salary_outlook", "label": "Salary Outlook"},
+]
 
 def test_explain_decision_includes_node_context_in_the_prompt(sample_result):
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = "This node covers additional tuition."
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": "This node covers additional tuition.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
         explain_decision(
             sample_result,
             question="Why does this cost more?",
             node_id="financial",
             node_label="Financial Impact",
             node_question="What does switching cost?",
+            available_nodes=_AVAILABLE_NODES,
         )
     system_arg = mock_call.call_args[0][0]
     assert "Financial Impact" in system_arg
+    # The valid-id list has to actually reach the prompt, or the model has
+    # no way to know which ids are real.
+    assert "financial" in system_arg
+    assert "salary_outlook" in system_arg
 
 
-def test_explain_decision_returns_grounded_and_fallback_flags(sample_result):
+def test_explain_decision_returns_structured_explanation(sample_result):
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = "Switching costs about $32,931 more."
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": "Switching costs about $32,931 more.",
+                "key_points": [{"title": "Cost", "explanation": "Additional tuition of $4,800."}],
+                "limitations": [],
+                "still_useful_for": ["Comparing tuition"],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result,
+            question="q",
+            node_id=None,
+            node_label=None,
+            node_question=None,
+            available_nodes=_AVAILABLE_NODES,
+        )
+    assert set(result.keys()) == {"explanation", "used_fallback"}
+    assert result["used_fallback"] is False
+    assert result["explanation"].direct_answer == "Switching costs about $32,931 more."
+    assert result["explanation"].key_points[0].title == "Cost"
+
+
+def test_explain_decision_drops_a_related_node_id_the_model_invented(sample_result):
+    """The model naming a plausible-but-fake node id must not reach the
+    caller — only ids present in available_nodes are allowed through."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": "Answer.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": ["salary_outlook", "not_a_real_node"],
+            }
+        )
+        result = explain_decision(
+            sample_result,
+            question="q",
+            node_id=None,
+            node_label=None,
+            node_question=None,
+            available_nodes=_AVAILABLE_NODES,
+        )
+    assert result["explanation"].related_node_ids == ["salary_outlook"]
+
+
+def test_explain_decision_falls_back_on_invalid_json(sample_result):
+    with patch("ai.interface._call_model", return_value="This is prose, not JSON."):
         result = explain_decision(
             sample_result, question="q", node_id=None, node_label=None, node_question=None
         )
-    assert set(result.keys()) == {"answer", "grounded", "used_fallback"}
-    assert result["grounded"] is True
+    assert result["used_fallback"] is True
+    assert result["explanation"].direct_answer  # fallback still produces real content
+
+
+def test_explain_decision_falls_back_on_schema_mismatch(sample_result):
+    """Valid JSON, but missing the required direct_answer field — must be
+    treated the same as invalid JSON, not crash."""
+    with patch("ai.interface._call_model", return_value=json.dumps({"key_points": []})):
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True
+
+
+def test_explain_decision_falls_back_on_invented_number_in_structured_response(sample_result):
+    with patch(
+        "ai.interface._call_model",
+        return_value=json.dumps(
+            {
+                "direct_answer": "Switching costs about $999,999 more.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        ),
+    ):
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True
+    assert "999,999" not in result["explanation"].direct_answer
+
+
+# --- question categorization ------------------------------------------------
+
+
+def test_different_question_categories_get_different_focused_instructions():
+    """The five starter prompts must not all produce the same prompt —
+    otherwise they'd tend toward the same generic answer regardless of
+    what was actually asked."""
+    from ai.interface import _question_focus
+
+    questions = [
+        "Explain the biggest difference",
+        "Why will graduation take longer?",
+        "Break down the additional cost",
+        "Compare the career outlook",
+        "What does this data not tell me?",
+    ]
+    focuses = {_question_focus(q) for q in questions}
+    # All five must be genuinely distinct instructions, not the same
+    # fallback text repeated.
+    assert len(focuses) == 5
+
+
+def test_unrecognized_question_gets_the_generic_focus_instruction():
+    from ai.interface import _question_focus
+
+    generic = _question_focus("What's the weather like today?")
+    assert "specific question asked" in generic

@@ -119,28 +119,62 @@ export interface CalcRequest {
   // than one supported institution to choose from.
   institution_id?: string;
 }
+/** One node's id and label — the frontend's own canonical list, sent to
+ * the backend so it knows which ids are real and can validate the
+ * model's related_node_ids against them. Kept minimal on purpose; the
+ * backend only needs enough to name and constrain the model's choices,
+ * not the full node definition. */
+export interface AvailableNode {
+  id: string;
+  label: string;
+}
 
 /**
  * Everything /explain needs: the same inputs /calculate takes (the
  * backend recomputes the result itself rather than trusting a
  * client-supplied one — see main.py's _run_change_major_calculation),
- * plus the question and which node is currently open.
+ * plus the question, which node is currently open, and the full list of
+ * nodes that exist (so the backend can validate related_node_ids).
  */
 export interface ExplainRequest extends CalcRequest {
   question: string;
   selected_node_id?: string;
   selected_node_label?: string;
   selected_node_question?: string;
+  available_nodes?: AvailableNode[];
+}
+
+export interface ExplainKeyPoint {
+  title: string;
+  explanation: string;
+}
+
+export interface ExplainLimitation {
+  title: string;
+  explanation: string;
+}
+
+export interface ExplainNextStep {
+  action: string;
+  reason: string;
 }
 
 export interface ExplainResponse {
-  answer: string;
-  // True when the AI couldn't produce a grounded answer twice in a row
-  // and a deterministic template was used instead. Still a real,
-  // trustworthy answer — just less conversational — so the UI shouldn't
-  // treat this as an error, only as a mild "kept it simple" signal.
+  direct_answer: string;
+  key_points: ExplainKeyPoint[];
+  limitations: ExplainLimitation[];
+  still_useful_for: string[];
+  next_step: ExplainNextStep | null;
+  // Real node ids the answer specifically discusses — already filtered
+  // server-side against the ids this request supplied, so anything here
+  // is guaranteed to exist on the map. Still worth treating defensively
+  // in the UI (see AskFork's NODES_BY_ID lookup) rather than assuming.
+  related_node_ids: string[];
+  // True when the AI couldn't produce a valid, grounded structured
+  // answer twice in a row and a deterministic template was used instead.
+  // Still fully grounded and trustworthy — just plainer — so the UI
+  // should show this as a quiet note, not an error.
   used_fallback: boolean;
-  selected_node_id: string | null;
 }
 
 /**
