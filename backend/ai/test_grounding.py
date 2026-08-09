@@ -266,6 +266,7 @@ _AVAILABLE_NODES = [
     {"id": "salary_outlook", "label": "Salary Outlook"},
 ]
 
+
 def test_explain_decision_includes_node_context_in_the_prompt(sample_result):
     with patch("ai.interface._call_model") as mock_call:
         mock_call.return_value = json.dumps(
@@ -412,3 +413,207 @@ def test_unrecognized_question_gets_the_generic_focus_instruction():
 
     generic = _question_focus("What's the weather like today?")
     assert "specific question asked" in generic
+
+
+# --- derived-relationship guard ----------------------------------------
+#
+# The failure mode these tests exist for: two individually real figures,
+# each grounded on its own, can still have an INVENTED relationship
+# stated between them ("$39,839 is roughly five times larger than
+# $8,498" -- both dollar amounts are real, "five times larger" is
+# arithmetic Fork's engine never performed). Numeric grounding alone
+# can't catch this since every literal number in the sentence traces
+# back to real data; a second, independent check is required.
+
+
+def test_grounded_individual_values_still_rejected_when_a_ratio_is_invented(sample_result):
+    """The core case: every dollar figure in the sentence is real and
+    grounded on its own, but the '5 times larger' relationship between
+    them was never computed by the backend. Must still be rejected."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": (
+                    "The $39,839 earnings gap is roughly five times larger "
+                    "than the $8,498 switching cost."
+                ),
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True
+    assert "five times" not in result["explanation"].direct_answer.lower()
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "the switching cost could theoretically be recovered in well under a year",
+        "you would pay off the switching cost within a year",
+        "within a year, the extra earnings would pay for the switch",
+        "in under two years you would earn back the difference",
+        "the ROI on switching looks strong",
+        "switching seems worth it financially",
+        "you would break even on the cost within 12 months",
+        "this is your break-even point",
+        "the gap is 5x larger than the switching cost",
+        "psychology earnings are 43% lower than computer science",
+        "switching would pay for itself quickly",
+        "you'd recoup the expense in about a year",
+    ],
+)
+def test_wording_variants_of_payback_roi_ratio_claims_are_rejected(sample_result, phrasing):
+    """Not just the exact screenshot phrasing -- reworded variants of the
+    same underlying claim (payback period, ROI, ratio, percent
+    comparison) must all be caught, since a model asked not to say
+    something one way will often say it another way instead."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": f"Switching costs more, and {phrasing}.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True, f"should have rejected: {phrasing!r}"
+
+
+def test_legitimate_backend_relationships_are_still_allowed(sample_result):
+    """The guard must not be so broad it rejects an answer that simply
+    RESTATES a relationship the backend itself already computed --
+    annual_salary_delta is a real field the engine produces, and
+    describing it in plain language must still pass."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": (
+                    "Reported early-career earnings differ by $39,839 per year "
+                    "between the two majors, based on the available data."
+                ),
+                "key_points": [
+                    {
+                        "title": "Additional cost",
+                        "explanation": "Switching costs an estimated $4,800 more in tuition.",
+                    }
+                ],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is False
+
+
+def test_legitimate_percent_growth_figure_from_source_data_is_not_flagged():
+    """A real percentage that already exists in the source data (e.g. a
+    BLS growth projection) must not be rejected just because it's a
+    percent sign near a number -- only NEW percent COMPARISONS the model
+    invents should be caught."""
+    from ai.interface import _has_invented_relationship, _build_number_allowlist
+
+    result = {
+        "summary": {"current_major": "A", "prospective_major": "B"},
+        "career_context": [
+            {
+                "major": "A",
+                "occupations": [{"title": "X", "percent_change_2024_2034": 9.1}],
+            }
+        ],
+    }
+    allowlist = _build_number_allowlist(result)
+    text = "BLS projects 9.1% growth for this occupation over the next decade."
+    assert _has_invented_relationship(text, allowlist) is False
+
+
+def test_relationship_violation_triggers_a_targeted_retry_not_the_generic_one(sample_result):
+    """The retry after a relationship violation should use the
+    relationship-specific corrective instruction, not the generic
+    grounding one -- confirms the two failure modes are tracked
+    separately rather than collapsed into one message."""
+    from ai.interface import RELATIONSHIP_RETRY_SUFFIX
+
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.side_effect = [
+            json.dumps(
+                {
+                    "direct_answer": "The gap is five times larger than the cost.",
+                    "key_points": [],
+                    "limitations": [],
+                    "still_useful_for": [],
+                    "next_step": None,
+                    "related_node_ids": [],
+                }
+            ),
+            json.dumps(
+                {
+                    "direct_answer": "Switching costs more overall.",
+                    "key_points": [],
+                    "limitations": [],
+                    "still_useful_for": [],
+                    "next_step": None,
+                    "related_node_ids": [],
+                }
+            ),
+        ]
+        explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    second_call_system_prompt = mock_call.call_args_list[1][0][0]
+    assert RELATIONSHIP_RETRY_SUFFIX.strip() in second_call_system_prompt
+
+
+def test_next_step_schema_is_unchanged_action_and_reason():
+    """Explicit regression guard: next_step keeps {action, reason}, not a
+    renamed {title, reason} -- per the decision not to make an
+    unnecessary breaking schema change."""
+    from ai.interface import NextStep
+
+    fields = NextStep.model_fields
+    assert set(fields.keys()) == {"action", "reason"}
+
+
+def test_explain_decision_has_no_way_to_receive_prior_ai_prose_as_context():
+    """Structural guarantee for requirement 7: previous Fork answers must
+    never become authoritative evidence for a later question. The
+    strongest version of that guarantee isn't a behavioral test (which
+    only proves today's code path is safe) -- it's that the function
+    signature has no parameter a caller COULD use to pass prior AI text
+    in, so there's nothing to accidentally wire up later. Only
+    `formatted_result` (this request's own fresh server-side
+    recalculation) supplies factual content; `question` is free text the
+    student typed, never model output from a previous turn."""
+    import inspect
+
+    from ai.interface import explain_decision
+
+    params = set(inspect.signature(explain_decision).parameters.keys())
+    assert params == {
+        "formatted_result",
+        "question",
+        "node_id",
+        "node_label",
+        "node_question",
+        "available_nodes",
+    }
+    # None of these params could plausibly carry prior AI-generated prose.
+    for suspicious in ("history", "previous", "prior", "context", "conversation"):
+        assert not any(suspicious in p for p in params), (
+            f"a parameter matching {suspicious!r} exists -- verify it can't "
+            "carry untrusted prior AI text as if it were fact"
+        )

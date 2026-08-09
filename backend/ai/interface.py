@@ -149,6 +149,16 @@ DECISION_QUESTION_SYSTEM_PROMPT = """You are Fork, a decision translator for a c
 
 You may ONLY reference numbers and facts present in that JSON object. Never calculate, estimate, or round anything differently than shown. Never introduce a fact, source, number, or citation that isn't in the object.
 
+You may restate and explain a relationship the object already contains (e.g. the object's own annual_salary_delta, or a stated percent-growth figure from BLS data). You may NOT create a NEW mathematical relationship between two values that weren't already compared by the backend. This specifically means never writing any of the following, even approximately or hedged with "roughly" or "theoretically":
+- a ratio or multiplier between two figures ("X times larger/more/higher than", "5x the cost")
+- a percent comparison you computed yourself ("43% higher than", "a 20% increase over")
+- a payback period, break-even point, or "recovered/paid off/earned back in X years/months"
+- return on investment, ROI, or "makes financial sense"
+- a claim that switching is "worth it," "worth the cost," or similar
+- any per-month or per-week figure derived from an annual or per-semester one, or vice versa, unless that exact figure already appears in the object
+
+If a comparison like this would be useful, describe the two figures side by side in plain language instead ("Computer Science graduates report $70,235; Psychology graduates report $30,396") and let the student draw their own conclusion — do not draw it for them.
+
 If the question isn't about this comparison (unrelated to major choice, credits, cost, timeline, or career outlook), set direct_answer to a brief redirect back to the decision and leave key_points, limitations, still_useful_for empty and next_step null.
 
 The student currently has "{node_label}" open ({node_question}).
@@ -186,6 +196,10 @@ Keep the total response to roughly 120-250 words unless the question explicitly 
 STRUCTURED_RETRY_SUFFIX = """
 
 Your previous answer either wasn't valid JSON matching the required schema, or used a number that isn't in the JSON object you were given. Every number must come from that object -- copy figures rather than restating them from memory. Respond again with ONLY the valid JSON object in the exact schema requested, and if you're unsure a number is grounded, describe the finding in words instead of a number."""
+
+RELATIONSHIP_RETRY_SUFFIX = """
+
+Your previous answer stated a mathematical relationship between two figures that the backend never computed -- a ratio, multiplier, percent comparison, payback period, break-even claim, ROI, or a "worth it" judgment. Every one of those requires arithmetic Fork's engine did not perform. Respond again with ONLY the valid JSON object, describing the relevant figures side by side in plain language instead of comparing them with a ratio, percentage, timeframe, or verdict you compute yourself."""
 
 
 # Maps keywords in the student's question to a focused instruction, so the
@@ -313,6 +327,114 @@ def explain_decision(
     }
 
 
+# --- derived-relationship guard -----------------------------------------
+#
+# Numeric grounding alone isn't enough: two individually real figures can
+# each pass that check while their RELATIONSHIP is invented by the model
+# ("$39,839 is roughly five times larger than $8,498" — both dollar
+# amounts are grounded; "five times larger" is arithmetic Fork never
+# performed). This is a second, independent check for exactly that
+# failure mode, working alongside the system prompt's own instructions
+# rather than replacing them — the prompt is the first line of defense,
+# this is the one that doesn't depend on the model actually listening.
+
+# Phrases that are NEVER legitimate regardless of what numbers surround
+# them, because the backend has no field that computes any of these
+# concepts at all — their mere presence means the model invented them.
+_ALWAYS_BANNED_PATTERNS = [
+    re.compile(r"\bpays?\s+for\s+itself\b", re.I),
+    re.compile(r"\bpays?\s+off\b", re.I),
+    re.compile(r"\bbreak[\s-]?even\b", re.I),
+    re.compile(r"\brecoup(s|ed|ing)?\b", re.I),
+    re.compile(r"\brecover(s|ed|ing)?\s+(the\s+)?(switching\s+)?cost", re.I),
+    re.compile(r"\bmakes?\s+(it|this|that)\s+back\b", re.I),
+    re.compile(r"\bpayback\s+period\b", re.I),
+    re.compile(r"\breturn\s+on\s+investment\b", re.I),
+    re.compile(r"\bROI\b"),
+    re.compile(r"\bworth\s+(it|the\s+(cost|switch|extra|money|tuition))\b", re.I),
+    re.compile(r"\bfinancially\s+worth\b", re.I),
+    re.compile(r"\bmakes?\s+(financial\s+)?sense\b", re.I),
+]
+
+# A spelled-out multiplier ("five times more") can never be grounded,
+# because number words never match the digit-based grounding regex in the
+# first place — there's no allowlist entry to check it against, so it's
+# rejected outright rather than compared to anything.
+_RATIO_WORD_PATTERN = re.compile(
+    r"\b(half|double|triple|quadruple|twice|one|two|three|four|five|six|"
+    r"seven|eight|nine|ten)\s+(times\s+)?"
+    r"(as\s+(much|many)|more|less|larger|smaller|higher|lower|greater|fewer)\b",
+    re.I,
+)
+
+# A digit multiplier or percent comparison ("5x more", "3.2 times larger",
+# "40% higher") MIGHT legitimately restate a real backend figure (e.g. a
+# BLS growth percentage) — so these extract the number and check it
+# against the same allowlist the main grounding pass uses, rather than
+# banning the phrase outright. Only rejected when that specific number
+# isn't itself something the calculation actually contains.
+_RATIO_DIGIT_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(?:x|times)\s+"
+    r"(?:as\s+(?:much|many)|more|less|larger|smaller|higher|lower|greater|fewer)\b",
+    re.I,
+)
+_PERCENT_COMPARISON_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*%\s*(?:higher|lower|more|less|greater|smaller|fewer)\b",
+    re.I,
+)
+
+# Payback/break-even claims often don't put the object word ("cost") right
+# next to the verb — "the switching cost could be recovered in well under
+# a year" has "recover" and the timeframe eleven words apart. A verb
+# immediately followed by "cost" (the earlier _ALWAYS_BANNED_PATTERNS
+# entry) is too narrow to catch that phrasing. These two patterns instead
+# look for a payback-style verb and a duration phrase within the same
+# sentence (a ~60-character window), in either order — catching both
+# "recovered...in a year" and "in a year, you'd recover..." without
+# needing a distinct pattern for every word order.
+_PAYBACK_VERB = (
+    r"recover(?:s|ed|ing)?"
+    r"|pays?\s+(?:for\s+(?:itself|it|the\s+\w+)|off|back)"
+    r"|earns?\s+back"
+    r"|makes?\s+(?:it\s+)?back"
+    r"|break[\s-]?even"
+)
+_SPELLED_NUMBER = (
+    r"a|one|two|three|four|five|six|seven|eight|nine|ten|\d+"
+)
+_TIMEFRAME = rf"(?:within|in|under|less\s+than)\s+(?:{_SPELLED_NUMBER})?\s*(?:year|month|week)s?"
+
+_PAYBACK_TIMEFRAME_PATTERN = re.compile(
+    rf"\b(?:{_PAYBACK_VERB})\b[^.]{{0,60}}\b(?:{_TIMEFRAME})\b", re.I
+)
+_TIMEFRAME_PAYBACK_PATTERN = re.compile(
+    rf"\b(?:{_TIMEFRAME})\b[^.]{{0,60}}\b(?:{_PAYBACK_VERB})\b", re.I
+)
+
+
+def _has_invented_relationship(text: str, allowlist: set[str]) -> bool:
+    """True if `text` contains a mathematical relationship (ratio,
+    multiplier, payback/ROI/worth-it language) that isn't something the
+    backend actually supplied. Deliberately broader than the exact
+    phrasing seen in any one example — worded variants ("pays back",
+    "break-even point", "5x the cost", "recoup the expense") are meant to
+    be caught by the same patterns, not require a new one each time."""
+    for pattern in _ALWAYS_BANNED_PATTERNS:
+        if pattern.search(text):
+            return True
+    if _RATIO_WORD_PATTERN.search(text):
+        return True
+    if _PAYBACK_TIMEFRAME_PATTERN.search(text) or _TIMEFRAME_PAYBACK_PATTERN.search(text):
+        return True
+    for match in _RATIO_DIGIT_PATTERN.finditer(text):
+        if not (_numeric_variants(float(match.group(1))) & allowlist):
+            return True
+    for match in _PERCENT_COMPARISON_PATTERN.finditer(text):
+        if not (_numeric_variants(float(match.group(1))) & allowlist):
+            return True
+    return False
+
+
 def _grounded_structured_explanation(
     system: str,
     user_message: str,
@@ -330,26 +452,42 @@ def _grounded_structured_explanation(
     """
     allowlist = _build_number_allowlist(formatted_result)
 
-    def _attempt(sys_prompt: str) -> DecisionExplanation | None:
+    def _attempt(sys_prompt: str) -> tuple[DecisionExplanation | None, str]:
+        """Returns (explanation, failure_reason). failure_reason is "" on
+        success, and otherwise names which check failed ("relationship" or
+        "grounding") so the retry can respond with a targeted correction
+        instead of a one-size-fits-all message."""
         try:
             raw = _call_model(sys_prompt, user_message, max_tokens=900)
         except Exception:
-            return None
+            return None, "grounding"
         explanation = _parse_structured_explanation(raw)
         if explanation is None:
-            return None
-        if not _all_numbers_grounded(_explanation_text_for_grounding(explanation), allowlist):
-            return None
+            return None, "grounding"
+        text = _explanation_text_for_grounding(explanation)
+        if not _all_numbers_grounded(text, allowlist):
+            return None, "grounding"
+        # A second, separate check from number-grounding: two individually
+        # real numbers can each be grounded while their RELATIONSHIP is
+        # invented ("$39,839 is roughly five times larger than $8,498" —
+        # both dollar figures are real, "five times larger" is not). The
+        # numeric check alone can't catch this, and it can't catch it at
+        # all when the multiplier is spelled out ("five") rather than
+        # digits, since spelled-out numbers never match the numeric regex
+        # in the first place.
+        if _has_invented_relationship(text, allowlist):
+            return None, "relationship"
         explanation.related_node_ids = _filter_to_known_nodes(
             explanation.related_node_ids, available_node_ids
         )
-        return explanation
+        return explanation, ""
 
-    first = _attempt(system)
+    first, failure = _attempt(system)
     if first is not None:
         return {"explanation": first, "used_fallback": False}
 
-    second = _attempt(system + STRUCTURED_RETRY_SUFFIX)
+    retry_suffix = RELATIONSHIP_RETRY_SUFFIX if failure == "relationship" else STRUCTURED_RETRY_SUFFIX
+    second, _ = _attempt(system + retry_suffix)
     if second is not None:
         return {"explanation": second, "used_fallback": False}
 
