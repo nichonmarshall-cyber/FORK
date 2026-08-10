@@ -1,8 +1,8 @@
 "use client";
 
 import { forwardRef, useId, useRef, useState } from "react";
-import AskFork from "@/components/AskFork";
 import DecisionMap from "@/components/DecisionMap";
+import DecisionChat from "@/components/chat/DecisionChat";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
 import { NODES_BY_ID, payDelta } from "@/lib/nodes";
@@ -261,7 +261,7 @@ export default function Home() {
           )}
 
           <div className="border-t border-white/[0.07] p-4">
-            <AskFork
+            <DecisionChat
               result={result}
               calcInputs={{
                 current_major: currentMajor,
