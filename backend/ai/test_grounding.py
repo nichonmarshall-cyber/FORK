@@ -617,3 +617,101 @@ def test_explain_decision_has_no_way_to_receive_prior_ai_prose_as_context():
             f"a parameter matching {suspicious!r} exists -- verify it can't "
             "carry untrusted prior AI text as if it were fact"
         )
+
+    # --- subjective magnitude verdicts and unsupported extrapolation -------
+#
+# All of these were observed in real output before this pass. The engine
+# ranks nothing and reports a single one-year earnings snapshot, so any
+# claim that one figure overwhelms another, or that a gap repeats
+# annually, is the model's own judgment presented as a finding.
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "the single most consequential difference is the earnings gap",
+        "that figure dwarfs the estimated additional cost",
+        "the earnings gap dominates everything else",
+        "it is the largest number in this comparison by a wide margin",
+        "this carries the most weight in the overall difference",
+        "the cost difference is overwhelmed by the earnings gap",
+        "the earnings gap is an annual figure that recurs",
+        "that difference repeats every year",
+    ],
+)
+def test_subjective_magnitude_and_recurrence_claims_are_rejected(sample_result, phrasing):
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": f"Fork's comparison shows that {phrasing}.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True, f"should have rejected: {phrasing!r}"
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "The largest difference in Fork's current comparison is early-career earnings.",
+        "Fork currently estimates that 6 credits may not apply toward the prospective degree.",
+        "The available College Scorecard data reports figures for the broader graduate group.",
+        "Based on the information you entered, most of your credits are currently counted.",
+        "No single factor clearly separates the two options in the current comparison.",
+        "An official what-if degree audit could confirm which credits apply.",
+        "The available data does not show a difference here.",
+    ],
+)
+def test_approved_fork_voice_is_not_rejected(sample_result, phrasing):
+    """The guard has to leave Fork's own approved phrasings alone. If any
+    of these trip it, the patterns are too broad and Fork would fall back
+    to the deterministic template constantly."""
+    from ai.interface import _build_number_allowlist, _has_invented_relationship
+
+    allowlist = _build_number_allowlist(sample_result)
+    assert _has_invented_relationship(phrasing, allowlist) is False
+
+
+def test_prompt_instructs_against_repeating_the_same_finding():
+    """Sections must each add something new. Prompt-level rule --
+    asserted structurally since there's no deterministic way to test
+    'did the model repeat itself' without a live call."""
+    from ai.interface import DECISION_QUESTION_SYSTEM_PROMPT as p
+
+    assert "what new information does this add" in p.lower()
+    assert "do not restate the same finding" in p.lower()
+
+
+def test_prompt_carries_the_certainty_vocabulary():
+    from ai.interface import DECISION_QUESTION_SYSTEM_PROMPT as p
+
+    for term in ("KNOWN", "CALCULATED", "ESTIMATED", "UNRESOLVED"):
+        assert term in p
+
+
+def test_prompt_forbids_treating_typed_credit_counts_as_an_audit():
+    from ai.interface import DECISION_QUESTION_SYSTEM_PROMPT as p
+
+    assert "not an official audit" in p.lower()
+    assert "count toward nothing" in p  # named explicitly as forbidden
+    assert "electives" in p.lower()
+
+
+def test_prompt_requires_naming_the_broader_category_for_earnings():
+    from ai.interface import DECISION_QUESTION_SYSTEM_PROMPT as p
+
+    assert "broader" in p.lower()
+    assert "never claim the difference recurs" in p.lower()
+
+
+def test_prompt_limits_related_nodes_to_a_handful():
+    from ai.interface import DECISION_QUESTION_SYSTEM_PROMPT as p
+
+    assert "1-3" in p

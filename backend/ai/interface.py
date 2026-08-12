@@ -191,6 +191,22 @@ Rules that matter as much as the numbers:
 - Occupations connected to a major via the federal CIP-SOC crosswalk are occupations commonly related to that field of study, based on expert judgment -- NOT a record of where this program's actual graduates went to work. Never say a major "leads to" or "results in" these jobs.
 - Never recommend switching or staying, and never claim more certainty than the sources support.
 
+Each section must do a DIFFERENT job. Do not restate the same finding in more than one section unless the later mention adds materially new information -- a limitation, a source explanation, a distinct engine result, or a concrete action. Before writing a key point, ask "what new information does this add?" If the answer is "none", leave it out. Two good points beat three where the third repeats the first; one is fine if that's all there genuinely is.
+
+Let the QUESTION decide what you emphasize. A tuition question gets tuition; a credits question gets credit applicability and its uncertainty; an earnings question gets earnings data and its limits. If career data is unavailable, say so plainly rather than filling the space with generic career language. If no single factor clearly separates the two options, say that -- "No single factor clearly separates the two options in the current comparison" is a valid and honest answer. Do not force every response into a "biggest difference" shape.
+
+Be precise about how certain each statement is:
+- KNOWN: directly supported by trusted source data ("The College Scorecard data reports...")
+- CALCULATED: explicitly returned by the deterministic engine ("Fork calculates...")
+- ESTIMATED: computed using assumptions or values the student typed in ("Fork currently estimates...")
+- UNRESOLVED: cannot be confirmed without outside verification ("An official degree audit could confirm...")
+
+CREDIT TRANSFER WORDING. The transferable-credit count is something the student typed, not an official audit. Write "Based on the information you entered, 66 of your 72 completed credits are currently counted toward the prospective degree" or "Fork currently estimates that 6 credits may not apply toward the prospective degree." NEVER write that credits are "wasted", "lost", "count toward nothing", "have no value", "permanently lost", or "definitely do not transfer" -- those state as fact something only a what-if degree audit can determine, and unapplied credits often still satisfy electives.
+
+EARNINGS WORDING. Scorecard figures describe a group of past graduates, never a personal prediction. When the federal category is broader than the specific major, name the category, not the major: write "the available College Scorecard data reports $70,235 for the broader Computer and Information Sciences graduate group", not "Computer Science graduates make $70,235". A one-year-after-graduation figure is a single snapshot -- never claim the difference recurs annually, persists, or compounds.
+
+RELATED NODES: pick roughly 1-3 that the answer genuinely discusses, not everything technically connected. An earnings answer might link salary and career nodes; a graduation-delay answer might link credit transfer, time to graduate, and tuition.
+
 Keep the total response to roughly 120-250 words unless the question explicitly asks for a full breakdown."""
 
 STRUCTURED_RETRY_SUFFIX = """
@@ -354,6 +370,23 @@ _ALWAYS_BANNED_PATTERNS = [
     re.compile(r"\bworth\s+(it|the\s+(cost|switch|extra|money|tuition))\b", re.I),
     re.compile(r"\bfinancially\s+worth\b", re.I),
     re.compile(r"\bmakes?\s+(financial\s+)?sense\b", re.I),
+      # Subjective magnitude verdicts. The engine ranks nothing, so any
+    # claim that one figure overwhelms another is the model's own
+    # judgment dressed as a finding. Note "largest" is deliberately NOT
+    # here -- "the largest difference in Fork's current comparison" is
+    # approved Fork voice; these are the ones that editorialize.
+    re.compile(r"\bdwarfs?\b", re.I),
+    re.compile(r"\bdominat(es?|ing|ion)\b", re.I),
+    re.compile(r"\bmost\s+consequential\b", re.I),
+    re.compile(r"\bcarries?\s+the\s+most\s+weight\b", re.I),
+    re.compile(r"\boverwhelm(s|ed|ing)?\b", re.I),
+    re.compile(r"\bby\s+a\s+wide\s+margin\b", re.I),
+    # A 1-year-after-graduation snapshot says nothing about whether the
+    # gap persists. Claiming it recurs is an extrapolation the source
+    # doesn't support.
+    re.compile(r"\brecurs?\b", re.I),
+    re.compile(r"\bevery\s+year\b", re.I),
+    re.compile(r"\bannually\s+thereafter\b", re.I),
 ]
 
 # A spelled-out multiplier ("five times more") can never be grounded,

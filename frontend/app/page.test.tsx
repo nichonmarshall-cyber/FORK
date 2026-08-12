@@ -9,10 +9,10 @@ import { ApiError } from "@/lib/types";
 // about re-testing the fetch plumbing (that's covered in lib/types.test.ts).
 vi.mock("@/lib/types", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/types")>();
-  return { ...actual, calculateChangeMajor: vi.fn() };
+  return { ...actual, calculateChangeMajor: vi.fn(), explainDecision: vi.fn() };
 });
 
-import { calculateChangeMajor } from "@/lib/types";
+import { calculateChangeMajor, explainDecision } from "@/lib/types";
 
 const GOOD_RESULT = {
   summary: {
@@ -100,5 +100,91 @@ describe("Home — failed request handling", () => {
       ).toBeInTheDocument(),
     );
     expect(transferableInput).toHaveFocus();
+  });
+});
+
+
+describe("Ask Fork uses the calculated snapshot, not draft form state", () => {
+  const ANSWER = {
+    direct_answer: "A.",
+    key_points: [],
+    limitations: [],
+    still_useful_for: [],
+    next_step: null,
+    related_node_ids: [],
+    used_fallback: false,
+  };
+
+  function resultFor(cur: string, pro: string) {
+    return {
+      ...GOOD_RESULT,
+      summary: { ...GOOD_RESULT.summary, current_major: cur, prospective_major: pro },
+    };
+  }
+
+  it("keeps asking about the calculated decision after dropdowns change without recalculating", async () => {
+    const mockCalc = vi.mocked(calculateChangeMajor);
+    const mockExplain = vi.mocked(explainDecision);
+    mockExplain.mockResolvedValue(ANSWER as never);
+
+    render(<Home />);
+
+    // 1. Calculate Psychology (B.A.) -> Computer Science.
+    fireEvent.change(screen.getByLabelText(/current major/i), {
+      target: { value: "psychology_ba" },
+    });
+    fireEvent.change(screen.getByLabelText(/considering/i), {
+      target: { value: "computer_science" },
+    });
+    mockCalc.mockResolvedValueOnce(
+      resultFor("Psychology (B.A.)", "Computer Science") as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /show me the difference/i }));
+    await waitFor(() => expect(screen.getByText("How this affects you")).toBeInTheDocument());
+
+    // 2. Change the dropdowns to CS -> IT. Do NOT recalculate.
+    fireEvent.change(screen.getByLabelText(/current major/i), {
+      target: { value: "computer_science" },
+    });
+    fireEvent.change(screen.getByLabelText(/considering/i), {
+      target: { value: "information_technology" },
+    });
+
+    // 3. Ask Fork a question.
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(mockExplain).toHaveBeenCalledTimes(1));
+
+    // 4. The request must describe the decision still on screen, not the
+    //    unsubmitted draft.
+    const first = mockExplain.mock.calls[0][0];
+    expect(first.current_major).toBe("psychology_ba");
+    expect(first.prospective_major).toBe("computer_science");
+
+    // 5. Now actually recalculate.
+    mockCalc.mockResolvedValueOnce(
+      resultFor("Computer Science", "Information Technology") as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /show me the difference/i }));
+    await waitFor(() => expect(mockCalc).toHaveBeenCalledTimes(2));
+
+    // 6-7. The next question uses the NEW snapshot.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Break down the additional cost" }),
+      ).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Break down the additional cost" }));
+    await waitFor(() => expect(mockExplain).toHaveBeenCalledTimes(2));
+
+    const second = mockExplain.mock.calls[1][0];
+    expect(second.current_major).toBe("computer_science");
+    expect(second.prospective_major).toBe("information_technology");
+  });
+
+  it("disables Ask Fork until the first calculation has actually run", () => {
+    render(<Home />);
+    expect(
+      screen.getByRole("button", { name: "Explain the biggest difference" }),
+    ).toBeDisabled();
   });
 });

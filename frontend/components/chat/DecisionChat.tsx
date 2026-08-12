@@ -48,7 +48,13 @@ export default function DecisionChat({
   onSelectNode,
 }: {
   result: CalcResult | null;
-  calcInputs: DecisionInputs;
+  /**
+   * The inputs that produced `result` -- NOT the live form state. Null
+   * until the first successful calculation, which is the same condition
+   * that makes `result` null, so the two always agree about whether
+   * there's anything to ask about.
+   */
+  calcInputs: DecisionInputs | null;
   selectedNode: SelectedNodeInfo | null;
   onSelectNode: (id: string) => void;
 }) {
@@ -56,17 +62,27 @@ export default function DecisionChat({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const disabled = result === null;
+  // Both must be present: a question needs a result to be about AND the
+  // snapshot of inputs that produced it. They're set together, so this is
+  // belt-and-braces, but it makes the non-null assertion in ask() honest.
+  const disabled = result === null || calcInputs === null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const fingerprintRef = useRef<string | null>(null);
 
-  // Detect that the student re-ran the calculation with different inputs.
-  // Rather than clearing history (which would throw away context they may
-  // still want to read), insert a visible boundary — everything above it
-  // describes the old numbers, everything below describes the new ones.
+  // Detect that a NEW calculation completed, and insert a visible
+  // boundary rather than clearing history (which would throw away
+  // context the student may still want to read).
+  //
+  // Keyed on `result` only — NOT on calcInputs. The two update at
+  // different moments: the form's dropdowns change the instant a student
+  // picks a different major, while `result` changes only once they click
+  // "Show me the difference". Watching calcInputs meant a boundary could
+  // fire during that gap and get labelled from the still-previous
+  // result, which is precisely the stale-label bug. Both the trigger and
+  // the labels now come from the same object, so they cannot disagree.
   useEffect(() => {
     if (result === null) return;
-    const fingerprint = buildDecisionFingerprint(calcInputs);
+    const fingerprint = buildDecisionFingerprint(result.summary);
     if (fingerprintRef.current === null) {
       fingerprintRef.current = fingerprint;
       return;
@@ -76,14 +92,12 @@ export default function DecisionChat({
       setTurns((prev) =>
         withDecisionBoundary(
           prev,
-          decisionBoundaryLabel(
-            result.summary.current_major,
-            result.summary.prospective_major,
-          ),
+          result.summary.current_major,
+          result.summary.prospective_major,
         ),
       );
     }
-  }, [calcInputs, result]);
+  }, [result]);
 
   // Keep the newest turn in view as the conversation grows.
   useEffect(() => {
@@ -96,7 +110,7 @@ export default function DecisionChat({
     // `busy` is the real duplicate-submit gate — the disabled attributes
     // on the buttons are the visible signal, this is what actually
     // prevents a second in-flight request.
-    if (!trimmed || disabled || busy) return;
+    if (!trimmed || disabled || busy || calcInputs === null) return;
 
     setBusy(true);
     setDraft("");
@@ -177,7 +191,7 @@ export default function DecisionChat({
         role="log"
         aria-live="polite"
         aria-label="Conversation with Fork"
-        className={`space-y-3 overflow-y-auto px-3.5 ${isEmpty ? "py-3" : "max-h-[420px] py-3.5"}`}
+        className={`themed-scroll space-y-3 overflow-y-auto px-3.5 ${isEmpty ? "py-3" : "max-h-[420px] py-3.5"}`}
       >
         {isEmpty ? (
           <p className="text-[12.5px] text-slate-500">
@@ -279,7 +293,7 @@ function TurnView({
     <div className="flex items-center gap-2 py-0.5">
       <span className="h-px flex-1 bg-white/[0.08]" />
       <span className="shrink-0 text-[10.5px] uppercase tracking-[0.12em] text-slate-600">
-        {turn.label}
+        {decisionBoundaryLabel(turn)}
       </span>
       <span className="h-px flex-1 bg-white/[0.08]" />
     </div>

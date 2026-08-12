@@ -40,7 +40,15 @@ export interface ErrorTurn {
 export interface DecisionBoundaryTurn {
   kind: "decision_boundary";
   id: string;
-  label: string;
+  /**
+   * Immutable snapshot of the major pair AT THE MOMENT this boundary was
+   * created. Stored as data on the turn rather than re-derived at render
+   * time from live state — a historical divider has to keep describing
+   * the calculation it actually separated, even after the student runs
+   * three more comparisons.
+   */
+  currentMajorLabel: string;
+  prospectiveMajorLabel: string;
 }
 
 export type Turn = UserTurn | ForkTurn | ErrorTurn | DecisionBoundaryTurn;
@@ -62,44 +70,69 @@ export interface DecisionInputs {
 
 /**
  * Identifies "which decision are we talking about" as a single comparable
- * string. Used to detect that the student changed their inputs and re-ran
- * the calculation, so the chat can mark the boundary instead of letting
- * old answers silently appear to describe the new numbers.
+ * string, derived from a COMPLETED calculation result.
+ *
+ * Deliberately built from the result rather than from the form's live
+ * inputs. Those two sources update at different times: the dropdowns
+ * change the instant a student picks a different major, while `result`
+ * only changes once they actually click "Show me the difference". Keying
+ * the boundary off the inputs meant a divider could be created during
+ * that gap and labelled from the still-previous result — which is
+ * exactly the stale-label bug this shape prevents. One source for both
+ * the trigger and the label makes them incapable of disagreeing.
  */
-export function buildDecisionFingerprint(inputs: DecisionInputs): string {
+export function buildDecisionFingerprint(summary: {
+  current_major: string;
+  prospective_major: string;
+  incremental_semesters?: number;
+  incremental_total_cost?: number;
+  credits_lost?: number;
+}): string {
   return [
-    inputs.current_major,
-    inputs.prospective_major,
-    inputs.credits_completed,
-    inputs.credits_transferable,
+    summary.current_major,
+    summary.prospective_major,
+    summary.incremental_semesters ?? "",
+    summary.incremental_total_cost ?? "",
+    summary.credits_lost ?? "",
   ].join("|");
 }
 
-/** Human-readable label for the boundary marker, e.g. "Computer Science →
- * Psychology (B.S.)". Falls back to a generic label when display names
- * aren't available. */
-export function decisionBoundaryLabel(
-  currentMajorLabel?: string,
-  prospectiveMajorLabel?: string,
-): string {
-  if (currentMajorLabel && prospectiveMajorLabel) {
-    return `Decision updated · ${currentMajorLabel} → ${prospectiveMajorLabel}`;
+/** Renders a boundary's own stored snapshot. Takes the turn, not live
+ * state, so there is no code path that could render a historical divider
+ * from the current decision. */
+export function decisionBoundaryLabel(turn: DecisionBoundaryTurn): string {
+  if (turn.currentMajorLabel && turn.prospectiveMajorLabel) {
+    return `Decision updated · ${turn.currentMajorLabel} → ${turn.prospectiveMajorLabel}`;
   }
   return "Decision updated";
 }
 
 /**
- * Appends a boundary marker if the decision changed since the last turn,
- * and returns the new turn list. A boundary is only added when there's
+ * Appends a boundary marker capturing the major pair passed in, and
+ * returns the new turn list. A boundary is only added when there's
  * actually prior history to separate — a fresh conversation doesn't need
  * one, and two boundaries never stack back to back.
+ *
+ * Note there's no "have we seen this pair before" check on purpose:
+ * going A -> B, then B -> C, then back to A -> B is three distinct
+ * calculations and deserves three dividers. Deduplicating by pair would
+ * silently drop the third.
  */
 export function withDecisionBoundary(
   turns: Turn[],
-  label: string,
+  currentMajorLabel: string,
+  prospectiveMajorLabel: string,
 ): Turn[] {
   if (turns.length === 0) return turns;
   const last = turns[turns.length - 1];
   if (last.kind === "decision_boundary") return turns;
-  return [...turns, { kind: "decision_boundary", id: nextTurnId("boundary"), label }];
+  return [
+    ...turns,
+    {
+      kind: "decision_boundary",
+      id: nextTurnId("boundary"),
+      currentMajorLabel,
+      prospectiveMajorLabel,
+    },
+  ];
 }

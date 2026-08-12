@@ -118,7 +118,6 @@ describe("DecisionChat", () => {
     expect(screen.getByText(/Both majors report under one federal category/)).toBeInTheDocument();
     expect(screen.getByText("Request a what-if audit.")).toBeInTheDocument();
     expect(screen.getByText("Estimating tuition impact")).toBeInTheDocument();
-
     expect(screen.getByText(/Limitations and assumptions · 1/)).toBeInTheDocument();
     expect(screen.queryByText(/This is a group figure/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText(/Limitations and assumptions · 1/));
@@ -254,6 +253,145 @@ describe("DecisionChat", () => {
     expect(
       screen.getByText("Explain the biggest difference", { selector: "p" }),
     ).toBeInTheDocument();
+  });
+
+  it("labels the boundary from the NEW calculation, not the previous one, when dropdowns change before recalculating", async () => {
+    // Regression for the stale-divider bug. The form's dropdowns update
+    // calcInputs immediately, but `result` only changes once the student
+    // actually clicks "Show me the difference". A boundary created during
+    // that gap used to be labelled from the still-previous result.
+    vi.mocked(explainDecision).mockResolvedValue(ANSWER);
+    const mkResult = (cur: string, pro: string) =>
+      ({ summary: { current_major: cur, prospective_major: pro } }) as unknown as
+        import("@/lib/types").CalcResult;
+
+    const { rerender } = render(
+      <DecisionChat
+        result={mkResult("Psychology (B.A.)", "Computer Science")}
+        calcInputs={{ current_major: "psychology_ba", prospective_major: "computer_science", credits_completed: 72, credits_transferable: 66 }}
+        selectedNode={null}
+        onSelectNode={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(screen.getByText("The biggest difference is the earnings comparison.")).toBeInTheDocument());
+
+    // Dropdowns change; result deliberately still the OLD calculation.
+    rerender(
+      <DecisionChat
+        result={mkResult("Psychology (B.A.)", "Computer Science")}
+        calcInputs={{ current_major: "computer_science", prospective_major: "information_technology", credits_completed: 72, credits_transferable: 66 }}
+        selectedNode={null}
+        onSelectNode={vi.fn()}
+      />,
+    );
+    // No divider should appear yet -- nothing has actually been recalculated.
+    expect(screen.queryByText(/Decision updated/i)).not.toBeInTheDocument();
+    // Now the calculation actually completes.
+    rerender(
+      <DecisionChat
+        result={mkResult("Computer Science", "Information Technology")}
+        calcInputs={{ current_major: "computer_science", prospective_major: "information_technology", credits_completed: 72, credits_transferable: 66 }}
+        selectedNode={null}
+        onSelectNode={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Decision updated · Computer Science → Information Technology/i),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Psychology \(B\.A\.\) → Computer Science/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps every historical divider's own labels across three consecutive decisions", async () => {
+    vi.mocked(explainDecision).mockResolvedValue(ANSWER);
+    const mkResult = (cur: string, pro: string) =>
+      ({ summary: { current_major: cur, prospective_major: pro } }) as unknown as
+        import("@/lib/types").CalcResult;
+    const inputs = (cur: string, pro: string) => ({
+      current_major: cur, prospective_major: pro, credits_completed: 72, credits_transferable: 66,
+    });
+
+    const { rerender } = render(
+      <DecisionChat result={mkResult("Psychology (B.A.)", "Computer Science")}
+        calcInputs={inputs("psychology_ba", "computer_science")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(screen.getByText("The biggest difference is the earnings comparison.")).toBeInTheDocument());
+
+    rerender(
+      <DecisionChat result={mkResult("Computer Science", "Information Technology")}
+        calcInputs={inputs("computer_science", "information_technology")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Decision updated · Computer Science → Information Technology/i)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Break down the additional cost" }));
+    await waitFor(() => expect(explainDecision).toHaveBeenCalledTimes(2));
+
+    rerender(
+      <DecisionChat result={mkResult("Information Technology", "Business Administration (BBA)")}
+        calcInputs={inputs("information_technology", "business_administration")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Decision updated · Information Technology → Business Administration/i),
+      ).toBeInTheDocument(),
+    );
+
+    // The earlier divider must still read exactly as it did when created.
+    expect(
+      screen.getByText(/Decision updated · Computer Science → Information Technology/i),
+    ).toBeInTheDocument();
+    // And the whole conversation is still on screen.
+    expect(screen.getAllByText("The biggest difference is the earnings comparison.").length).toBeGreaterThan(0);
+  });
+
+  it("creates a NEW divider when returning to a previously-seen major pair", async () => {
+    // A -> B, B -> C, then A -> B again is three real calculations. The
+    // third must not be deduplicated away just because its labels match
+    // the first divider's.
+    vi.mocked(explainDecision).mockResolvedValue(ANSWER);
+    const mkResult = (cur: string, pro: string, cost: number) =>
+      ({ summary: { current_major: cur, prospective_major: pro, incremental_total_cost: cost } }) as unknown as
+        import("@/lib/types").CalcResult;
+    const inputs = (cur: string, pro: string) => ({
+      current_major: cur, prospective_major: pro, credits_completed: 72, credits_transferable: 66,
+    });
+
+    const { rerender } = render(
+      <DecisionChat result={mkResult("Psychology (B.A.)", "Computer Science", 100)}
+        calcInputs={inputs("psychology_ba", "computer_science")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(screen.getByText("The biggest difference is the earnings comparison.")).toBeInTheDocument());
+
+    rerender(
+      <DecisionChat result={mkResult("Computer Science", "Information Technology", 200)}
+        calcInputs={inputs("computer_science", "information_technology")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Computer Science → Information Technology/i)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Break down the additional cost" }));
+    await waitFor(() => expect(explainDecision).toHaveBeenCalledTimes(2));
+
+    // Back to the original pair.
+    rerender(
+      <DecisionChat result={mkResult("Psychology (B.A.)", "Computer Science", 100)}
+        calcInputs={inputs("psychology_ba", "computer_science")}
+        selectedNode={null} onSelectNode={vi.fn()} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Psychology \(B\.A\.\) → Computer Science/i)).toBeInTheDocument(),
+    );
   });
 
   it("inserts a decision-update boundary when the calculation inputs change", async () => {

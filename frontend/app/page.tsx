@@ -47,6 +47,18 @@ export default function Home() {
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const [result, setResult] = useState<CalcResult | null>(null);
+  // The exact inputs that produced `result`. Distinct from the draft form
+  // state above: those change the instant a dropdown moves, while this
+  // only advances when a calculation actually succeeds. Ask Fork reads
+  // THIS, so changing a dropdown without recalculating can never silently
+  // shift the factual context Fork explains away from the numbers still
+  // on screen.
+  const [calculatedInputs, setCalculatedInputs] = useState<{
+    current_major: string;
+    prospective_major: string;
+    credits_completed: number;
+    credits_transferable: number;
+  } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -87,6 +99,12 @@ export default function Home() {
         credits_transferable: validation.transferable.value as number,
       });
       setResult(data);
+      setCalculatedInputs({
+        current_major: currentMajor,
+        prospective_major: prospectiveMajor,
+        credits_completed: validation.completed.value as number,
+        credits_transferable: validation.transferable.value as number,
+      });
       setSelectedId("root");
       setSubmitAttempted(false);
     } catch (e) {
@@ -263,12 +281,7 @@ export default function Home() {
           <div className="border-t border-white/[0.07] p-4">
             <DecisionChat
               result={result}
-              calcInputs={{
-                current_major: currentMajor,
-                prospective_major: prospectiveMajor,
-                credits_completed: validation.completed.value ?? 0,
-                credits_transferable: validation.transferable.value ?? 0,
-              }}
+              calcInputs={calculatedInputs}
               selectedNode={
                 selectedNode
                   ? {
