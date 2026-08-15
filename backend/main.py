@@ -24,7 +24,13 @@ from decision_paths.change_major.major_resolution import (
     UnsupportedMajorError,
     resolve_major,
 )
+from decision_paths.change_major.comparison_inputs import (
+    ComparisonOption,
+    MultiComparisonInputs,
+)
 from decision_paths.change_major.metadata import CHANGE_MAJOR_METADATA
+from conversation.orchestrator import handle_turn, start_comparison
+from conversation.session import SESSIONS
 from audit_import.parser import parse_audit_pdf, propose_engine_inputs
 
 app = FastAPI(
@@ -344,6 +350,207 @@ def converse_change_major(request: ConversationRequest):
     formatted["explanation"] = explain_results(formatted)
     formatted["status"] = "complete"
     return formatted
+
+
+# =======================================================================
+# Multi-option conversational comparison
+# =======================================================================
+#
+# Entirely additive. /calculate, /explain and /converse above are
+# unchanged and keep working exactly as they did -- the manual form path
+# and the demo fallback don't depend on any of this.
+#
+# Session state lives in memory, in this process. Restarting the server
+# clears every conversation. That's a deliberate limitation for this
+# version; see conversation/session.py for the reasoning.
+
+
+class ComparisonOptionRequest(BaseModel):
+    """One alternative major. credits_transferable may be omitted -- that
+    marks the option pending rather than failing the whole comparison."""
+
+    major: str
+    credits_transferable: int | None = None
+    credits_transferable_source: str = "Student-reported"
+    prospective_credits_required: int | None = None
+    prospective_credits_required_source: str | None = None
+
+
+class StartComparisonRequest(BaseModel):
+    current_major: str
+    credits_completed: int
+    options: list[ComparisonOptionRequest]
+    credits_source: str = "Student-reported"
+    credits_source_date: str = "Not stated"
+    credits_in_progress: int = 0
+    institution_id: str = _DEFAULT_INSTITUTION_ID
+    session_id: str | None = None
+
+
+def _build_multi_inputs(request: StartComparisonRequest) -> MultiComparisonInputs:
+    """Resolve every major key, then validate. Resolution happens first so
+    an ambiguous or unsupported major produces the same clear 422 the
+    pairwise endpoints already return."""
+    current_key, _ = _resolve_major_or_raise("current_major", request.current_major)
+
+    options = []
+    for option in request.options:
+        key, _ = _resolve_major_or_raise("options", option.major)
+        options.append(
+            ComparisonOption(
+                major=key,
+                credits_transferable=option.credits_transferable,
+                credits_transferable_source=option.credits_transferable_source,
+                prospective_credits_required=option.prospective_credits_required,
+                prospective_credits_required_source=option.prospective_credits_required_source,
+            )
+        )
+
+    try:
+        return MultiComparisonInputs(
+            current_major=current_key,
+            credits_completed=request.credits_completed,
+            options=options,
+            credits_source=request.credits_source,
+            credits_source_date=request.credits_source_date,
+            credits_in_progress=request.credits_in_progress,
+        )
+    except ValidationError as e:
+        errors = _clean_validation_errors(e)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "validation_error",
+                "message": errors[0]["message"] if errors else "Invalid comparison inputs.",
+                "errors": errors,
+            },
+        )
+
+
+@app.post("/decision-paths/change-major/comparison/start")
+def start_multi_comparison(request: StartComparisonRequest):
+    """
+    Set up (or replace) a multi-option comparison and run it.
+
+    One request, N deterministic pairwise calculations. The student never
+    runs the form once per major.
+    """
+    inputs = _build_multi_inputs(request)
+
+    try:
+        reference_data = _load_reference_data(request.institution_id)
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    session = SESSIONS.get_or_create(request.session_id, request.institution_id)
+    session.institution_id = request.institution_id
+
+    try:
+        snapshot = start_comparison(session, inputs, reference_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "status": "ready",
+        "state": session.to_state_dict(),
+        "comparison": snapshot.to_dict(),
+    }
+
+
+class ConversationTurnRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+@app.post("/decision-paths/change-major/comparison/ask")
+def ask_multi_comparison(request: ConversationTurnRequest):
+    """
+    One conversational turn against an established comparison.
+
+    The response carries the conversation state back so a client can show
+    what's currently being compared. Active options and topic scope are
+    independent -- a topic question never narrows the option set.
+    """
+    session = SESSIONS.get(request.session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "status": "session_not_found",
+                "message": "That conversation isn't available any more. Sessions "
+                           "are held in memory and are cleared when the server "
+                           "restarts. Start a new comparison to continue.",
+            },
+        )
+    if session.inputs is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "no_comparison",
+                "message": "Set up a comparison before asking about it.",
+            },
+        )
+
+    try:
+        reference_data = _load_reference_data(session.institution_id)
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    result = handle_turn(session, request.message, reference_data)
+
+    if result.needs_clarification:
+        return {
+            "status": "clarification_required",
+            "message": result.clarification,
+            "state": session.to_state_dict(),
+        }
+
+    return {
+        "status": "complete",
+        "state": session.to_state_dict(),
+        "answer": result.explanation,
+        "used_fallback": result.used_fallback,
+    }
+
+
+class ExtractComparisonRequest(BaseModel):
+    message: str
+    institution_id: str = _DEFAULT_INSTITUTION_ID
+
+
+@app.post("/decision-paths/change-major/comparison/extract")
+def extract_multi_comparison(request: ExtractComparisonRequest):
+    """
+    Read a free-text setup message into comparison inputs.
+
+    Deliberately does NOT calculate. It returns what the AI understood
+    plus what's still missing, so the values can be confirmed before
+    anything is priced. A transfer figure the student didn't give comes
+    back null -- never estimated.
+    """
+    from ai.interface import extract_comparison_inputs
+
+    try:
+        reference_data = _load_reference_data(request.institution_id)
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    valid_keys = list(reference_data["majors"].keys())
+    extracted = extract_comparison_inputs(request.message, valid_keys)
+    parsed = extracted["parsed"]
+
+    pending = [
+        o["major"] for o in parsed.get("options", [])
+        if o.get("credits_transferable") is None
+    ]
+
+    return {
+        "status": "needs_more_information" if extracted["missing"] else "parsed",
+        "proposal": parsed,
+        "missing_fields": extracted["missing"],
+        "options_missing_transfer_credits": pending,
+        "requires_confirmation": True,
+    }
 
 
 MAX_AUDIT_BYTES = 5 * 1024 * 1024  # 5 MB; real audits are a few hundred KB

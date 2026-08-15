@@ -473,6 +473,7 @@ def _grounded_structured_explanation(
     user_message: str,
     formatted_result: dict,
     available_node_ids: list[str],
+    fallback=None,
 ) -> dict:
     """
     Structured counterpart to _grounded_explanation (below, still used by
@@ -482,7 +483,22 @@ def _grounded_structured_explanation(
     concatenation of every text field -- retries once with a stricter
     instruction, then falls back to a deterministic structured template
     if that also fails or the provider errors outright.
+
+    `formatted_result` is whatever object the answer must be grounded
+    against, and the allowlist is built from THAT object -- so passing a
+    scoped view here (as the multi-option path does) is what gives topic
+    scoping real enforcement rather than leaving it to the prompt. A
+    career view contains no tuition figure, so a tuition figure in the
+    answer has nothing to match against and fails.
+
+    `fallback` builds the deterministic answer when the model can't
+    produce a grounded one. Defaults to the pairwise template; the
+    multi-option path passes its own, since a view has a different shape
+    than a single formatted result.
     """
+    if fallback is None:
+        fallback = _fallback_explanation_structured
+
     allowlist = _build_number_allowlist(formatted_result)
 
     def _attempt(sys_prompt: str) -> tuple[DecisionExplanation | None, str]:
@@ -525,7 +541,7 @@ def _grounded_structured_explanation(
         return {"explanation": second, "used_fallback": False}
 
     return {
-        "explanation": _fallback_explanation_structured(formatted_result),
+        "explanation": fallback(formatted_result),
         "used_fallback": True,
     }
 
@@ -832,6 +848,363 @@ def _fallback_explanation_structured(formatted_result: dict) -> DecisionExplanat
         limitations=limitations,
         still_useful_for=[
             "Comparing the estimated tuition and timeline impact of switching",
+        ],
+        next_step=None,
+        related_node_ids=[],
+    )
+
+# =======================================================================
+# Multi-option comparison
+# =======================================================================
+#
+# Everything below serves the conversational, multi-option path. The
+# pairwise functions above are untouched and still serve /explain and
+# /converse.
+#
+# Two responsibilities, kept separate on purpose:
+#   - extract_comparison_inputs() reads what the student SAID and turns it
+#     into engine inputs. It never fills a gap; a value it wasn't given
+#     comes back as missing.
+#   - explain_multi_comparison() reads what the ENGINE PRODUCED and writes
+#     it up. It never sees the student's raw message, only the authorized
+#     view.
+
+
+MULTI_EXTRACTION_SYSTEM_PROMPT = """You extract structured data from a \
+student's message about comparing college majors. You do not calculate \
+anything, you do not estimate anything, and you do not recommend anything. \
+You only identify what the student has told you and map it to fields.
+
+Valid major keys are exactly: {valid_keys}
+
+A student is comparing their CURRENT major against one or more \
+ALTERNATIVE majors. Transferable credits are per alternative — the same \
+completed credits apply differently to different programs, so each \
+alternative gets its own figure.
+
+Respond with ONLY a JSON object, no other text, no markdown fences, in \
+this exact shape:
+
+{{
+  "current_major": "<major key, or null if not stated>",
+  "credits_completed": <integer, or null if not stated>,
+  "options": [
+    {{"major": "<major key>", "credits_transferable": <integer or null>}}
+  ]
+}}
+
+Rules:
+- If the student names a major that isn't in the valid key list, leave it \
+out entirely rather than mapping it to the closest match.
+- NEVER guess a transferable-credit figure. If the student named an \
+alternative but didn't say how many credits transfer to it, set \
+credits_transferable to null for that option. Null is a correct answer; an \
+invented number is not.
+- Do not assume all credits transfer, and do not assume none do.
+- Include every alternative the student named, even the ones missing a \
+transfer figure.
+- If the student's current major appears in their list of alternatives, \
+still report it as current_major and you may leave it out of options."""
+
+
+def extract_comparison_inputs(message: str, valid_major_keys: list[str]) -> dict:
+    """
+    Read a free-text setup message into multi-option comparison inputs.
+
+    Returns {"parsed": dict, "missing": list[str]} where `parsed` is the
+    raw structure and `missing` names any REQUIRED top-level field the
+    student didn't supply. Per-option missing transfer figures are not
+    listed here -- those are legitimately incomplete options, handled as
+    pending further down rather than as a failure to understand.
+
+    Valid major keys come from the institution's own data rather than a
+    hardcoded list, so adding a major to the data doesn't mean editing a
+    prompt.
+    """
+    system = MULTI_EXTRACTION_SYSTEM_PROMPT.format(
+        valid_keys=", ".join(valid_major_keys)
+    )
+    raw = _call_model(system, message)
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"AI extraction did not return valid JSON: {raw!r}") from e
+
+    options = parsed.get("options") or []
+    # Drop anything the model produced that isn't a real major key. The
+    # prompt already forbids it; this is the check that doesn't depend on
+    # the model listening.
+    options = [
+        o for o in options
+        if isinstance(o, dict) and o.get("major") in valid_major_keys
+    ]
+    parsed["options"] = options
+
+    missing = []
+    if parsed.get("current_major") not in valid_major_keys:
+        missing.append("current_major")
+    if parsed.get("credits_completed") is None:
+        missing.append("credits_completed")
+    if not [o for o in options if o["major"] != parsed.get("current_major")]:
+        missing.append("options")
+
+    return {"parsed": parsed, "missing": missing}
+
+
+MULTI_COMPARISON_SYSTEM_PROMPT = """You are Fork, a decision translator for \
+a college student comparing their current major against one or more \
+alternatives. You will be given a JSON object containing an ALREADY-\
+CALCULATED comparison, scoped to the topic the student is currently asking \
+about, plus their question.
+
+You may ONLY reference numbers and facts present in that JSON object. \
+Never calculate, estimate, or round anything differently than shown. Never \
+introduce a fact, source, number, or citation that isn't in the object. If \
+a number you want isn't in the object, it is not available to you — say so \
+or describe the finding in words.
+
+EVERY option in the object is being compared. Do not quietly drop one \
+because it seems less relevant. If an option's status is "pending", it is \
+missing an input Fork needs — say which field is missing and that Fork \
+needs it, and never state or imply a figure for that option. If an \
+option's status is "failed", explain briefly that it couldn't be \
+calculated and why.
+
+WHAT YOU MUST NOT DO — this is the core of Fork's design:
+- Never rank unlike dimensions against each other. Tuition, semesters, \
+credit applicability, and earnings are different kinds of consequence. \
+Never say one matters more than another, never assign weights, never \
+produce an overall score, and never name an overall "best" or "winner".
+- Never recommend a major or tell the student what to choose.
+- Never create a NEW mathematical relationship between two values the \
+backend didn't already compute: no ratios or multipliers ("three times \
+more"), no percent comparisons you worked out yourself, no payback \
+periods, break-even points, ROI, or "worth it" judgments, no per-month \
+figure derived from an annual one.
+
+WHAT YOU MAY DO:
+- Compare like with like. "Option A's estimated additional tuition is \
+higher than Option B's" is a comparison of the same measurement and is \
+fine. So are semesters against semesters, credits against credits, and one \
+reported earnings figure against another.
+- Restate a relationship the object already contains.
+- Say plainly when options don't meaningfully differ on something. "These \
+three are within a semester of each other" is a real and useful finding, \
+not a failure to find something.
+
+If the student has stated a priority of their own (for example, that \
+graduating quickly matters most to them), you may explain which options \
+align with THAT stated priority — because they supplied it. Do not invent \
+a priority they never expressed, and do not turn their priority into an \
+overall recommendation.
+
+{scope_instruction}
+
+Rules that matter as much as the numbers:
+- If a figure's status is "privacy_suppressed" or "unavailable", say it's \
+missing and why — never state or imply a number for it, and never call a \
+missing comparison "no change" (that phrase means a real measured zero, \
+not absent data).
+- A measured zero difference IS a real finding. Some majors share one \
+federal earnings category, so "no measured difference in reported \
+earnings" is correct information, not missing data. Say it that way.
+- College Scorecard earnings describe graduates who received federal aid \
+and were working and not enrolled when measured — not every graduate, and \
+not a prediction for this student. Say "graduates in this data".
+- Occupations linked to a major come from the federal CIP-SOC crosswalk: \
+occupations commonly related to that field, by expert judgment. NOT a \
+record of where graduates actually went. Never say a major "leads to" a job.
+- Credit figures the student typed are not an official audit. Never say \
+credits are "wasted", "lost", or "count toward nothing" — say what Fork \
+currently estimates based on what they entered, and that a what-if audit \
+would confirm it.
+
+RESPOND WITH ONLY a JSON object (no markdown fences, no other text) in \
+exactly this shape:
+{{
+  "direct_answer": "1-3 sentences answering the question directly. Start \
+with the actual finding, not 'There are several things to consider'.",
+  "key_points": [{{"title": "short title", "explanation": "plain-English \
+explanation referencing actual numbers and majors from the object"}}],
+  "limitations": [{{"title": "short limitation", "explanation": "what the \
+data cannot prove and why"}}],
+  "still_useful_for": ["one short phrase per thing this comparison IS \
+still useful for"],
+  "next_step": {{"action": "one concrete action", "reason": "why it would \
+improve the decision"}},
+  "related_node_ids": []
+}}
+
+next_step should be JSON null, not omitted, when no practical next step \
+applies. Leave related_node_ids as an empty list.
+
+You may neutrally mention other things the student could look at ("you can \
+dig into cost, graduation time, credits, or career outcomes"). You may not \
+tell them which one to look at next or which one should matter to them.
+
+Keep the whole response to roughly 120-250 words unless the question asks \
+for a full breakdown."""
+
+
+_SCOPE_INSTRUCTIONS = {
+    "broad": (
+        "The student asked a broad question, so you have the full comparison. "
+        "Synthesize the meaningful tradeoffs across the dimensions present. "
+        "You do not need to mechanically list every figure -- where options "
+        "barely differ on something, say so briefly and move on."
+    ),
+    "financial": (
+        "The student asked about cost. Focus on the tuition and total-cost "
+        "figures, and on the timeline and credit figures that DRIVE those "
+        "costs. Don't lead with career data."
+    ),
+    "career": (
+        "The student asked about careers and earnings. Focus on what the "
+        "earnings and occupation data actually measures, and its real "
+        "limits. Don't bring in cost or timeline figures."
+    ),
+    "timeline": (
+        "The student asked about graduation timing. Focus on remaining "
+        "semesters and the credit figures driving them. Don't lead with "
+        "cost or career figures."
+    ),
+    "credits": (
+        "The student asked about credits and requirements. Focus on what "
+        "applies where, what's still needed, and how uncertain those "
+        "figures are without an official audit."
+    ),
+}
+
+
+def explain_multi_comparison(view: dict, question: str) -> dict:
+    """
+    Explain an authorized view of a multi-option comparison.
+
+    `view` is both the payload the model sees AND the object its numbers
+    are verified against -- that identity is the point. See
+    conversation/views.py.
+
+    Returns {"explanation": DecisionExplanation, "used_fallback": bool}.
+    """
+    scope = view.get("topic_scope", "broad")
+    system = MULTI_COMPARISON_SYSTEM_PROMPT.format(
+        scope_instruction=_SCOPE_INSTRUCTIONS.get(scope, _SCOPE_INSTRUCTIONS["broad"])
+    )
+    user_message = json.dumps({"comparison": view, "question": question})
+
+    result = _grounded_structured_explanation(
+        system,
+        user_message,
+        view,
+        available_node_ids=[],
+        fallback=_fallback_multi_explanation,
+    )
+    return {
+        "explanation": result["explanation"],
+        "used_fallback": result["used_fallback"],
+    }
+
+
+def _fallback_multi_explanation(view: dict) -> DecisionExplanation:
+    """
+    Deterministic multi-option answer, built entirely from string
+    formatting against the view. No model call, so there is nothing here
+    that could be invented. Used when the model can't produce a grounded
+    answer twice running, or the provider fails outright.
+
+    Deliberately plain. The priority is that every sentence is true, not
+    that it's insightful -- and it still refuses to rank the options
+    against each other, because the fallback has to obey the same rules
+    the model does.
+    """
+    anchor = view.get("current_major", "your current major")
+    options = view.get("options", [])
+    calculated = [o for o in options if o.get("status") == "calculated"]
+    pending = [o for o in options if o.get("status") == "pending"]
+    failed = [o for o in options if o.get("status") == "failed"]
+
+    names = ", ".join(o["major"] for o in options) or "no options"
+    direct = (
+        f"Here's what Fork calculated for {anchor} compared against {names}, "
+        "based on the credits you entered."
+    )
+
+    key_points: list[KeyPoint] = []
+    for option in calculated:
+        data = option.get("data", {})
+        bits: list[str] = []
+
+        financial = data.get("financial", {})
+        cost = financial.get("incremental_total_cost", {}).get("value")
+        if cost is not None:
+            direction = "more" if cost > 0 else "less" if cost < 0 else "about the same"
+            bits.append(
+                f"estimated total difference of {_money(abs(cost))} {direction}"
+                if cost != 0
+                else "about the same estimated total"
+            )
+
+        timeline = data.get("timeline", {})
+        semesters = timeline.get("incremental_semesters", {}).get("value")
+        if semesters is not None:
+            if semesters > 0:
+                bits.append(f"{semesters} more semester(s)")
+            elif semesters < 0:
+                bits.append(f"{abs(semesters)} fewer semester(s)")
+            else:
+                bits.append("no change to graduation timing")
+
+        career = data.get("career", {})
+        delta = career.get("annual_salary_delta", {}).get("value")
+        if delta is not None and delta != 0:
+            direction = "higher" if delta > 0 else "lower"
+            bits.append(
+                f"reported early-career earnings {_money(abs(delta))}/yr {direction}"
+            )
+        elif delta == 0:
+            bits.append("no measured difference in reported early-career earnings")
+
+        if bits:
+            key_points.append(
+                KeyPoint(
+                    title=option["major"],
+                    explanation="Fork estimates " + "; ".join(bits) + ".",
+                )
+            )
+
+    limitations: list[Limitation] = []
+    for option in pending:
+        fields = ", ".join(option.get("missing_fields", [])) or "a required input"
+        limitations.append(
+            Limitation(
+                title=f"{option['major']} isn't calculated yet",
+                explanation=(
+                    f"Fork still needs {fields} for {option['major']}. It hasn't "
+                    "been estimated, so there are no figures for it here."
+                ),
+            )
+        )
+    for option in failed:
+        limitations.append(
+            Limitation(
+                title=f"{option['major']} couldn't be calculated",
+                explanation=option.get("error", "Its inputs didn't validate."),
+            )
+        )
+
+    if not calculated:
+        direct = (
+            f"Fork doesn't have enough information yet to compare anything "
+            f"against {anchor}."
+        )
+
+    return DecisionExplanation(
+        direct_answer=direct,
+        key_points=key_points,
+        limitations=limitations,
+        still_useful_for=[
+            "Comparing estimated tuition, timing, and credit impact side by side",
         ],
         next_step=None,
         related_node_ids=[],
