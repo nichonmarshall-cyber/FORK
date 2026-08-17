@@ -29,6 +29,11 @@ export interface ErrorTurn {
   id: string;
   /** The question that failed, so Retry can resend exactly it. */
   failedQuestion: string;
+  /** Overrides the generic failure copy — used for "Ask Fork is
+   * temporarily unavailable" (the intent-classification provider itself
+   * failed) so it reads differently from a generic explanation failure,
+   * which degrades to a deterministic answer instead of erroring at all. */
+  message?: string;
 }
 
 /**

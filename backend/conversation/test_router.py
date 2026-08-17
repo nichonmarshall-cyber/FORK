@@ -1,11 +1,10 @@
 """
-Tests for topic routing.
-
-The behavior that matters most here is inheritance: a student shouldn't
-have to say "financially" in every message to stay on the subject of
-money. The second is that routing NEVER touches the option set -- that's
-covered in the orchestrator tests, but it's the reason this module has no
-knowledge of active_options at all.
+Tests for the deterministic mapping from a classified topic_scope onto a
+concrete scope, and the fixed clarification copy for each
+clarification_type. Natural-language understanding is tested against
+ai.interface's classify_intent() (ai/test_intent.py) and end-to-end
+against handle_turn() with a stubbed classifier (test_orchestrator.py) --
+nothing here matches phrases, because nothing in router.py does anymore.
 """
 
 from conversation.router import (
@@ -13,116 +12,92 @@ from conversation.router import (
     CAREER,
     CREDITS,
     FINANCIAL,
-    INTENT_AMBIGUOUS,
-    INTENT_DEFAULT_BROAD,
-    INTENT_EXPLICIT,
-    INTENT_INHERITED,
     TIMELINE,
-    route_question,
+    UNCLEAR_TOPIC_MESSAGE,
+    VERDICT_WITHOUT_PRIORITY_MESSAGE,
+    ambiguous_major_message,
+    clarification_message,
+    resolve_topic_scope,
 )
 
-
-# --- explicit topic signals ---------------------------------------------
-
-
-def test_cost_question_routes_financial():
-    d = route_question("Which one costs me more?")
-    assert d.scope == FINANCIAL
-    assert d.intent == INTENT_EXPLICIT
+_MAJORS = {
+    "psychology_ba": {"display_name": "Psychology (B.A.)"},
+    "psychology_bs": {"display_name": "Psychology (B.S.)"},
+    "computer_science": {"display_name": "Computer Science"},
+}
 
 
-def test_career_question_routes_career():
-    assert route_question("How do the careers compare?").scope == CAREER
-    assert route_question("What kind of salary can I expect?").scope == CAREER
+class TestResolveTopicScope:
+    def test_explicit_scope_passes_through(self):
+        for scope in (BROAD, FINANCIAL, CAREER, TIMELINE, CREDITS):
+            decision = resolve_topic_scope(scope, current_scope=None)
+            assert decision.scope == scope
+            assert not decision.needs_clarification
+
+    def test_unchanged_inherits_prior_scope(self):
+        decision = resolve_topic_scope("unchanged", current_scope=FINANCIAL)
+        assert decision.scope == FINANCIAL
+        assert not decision.needs_clarification
+
+    def test_unchanged_with_no_prior_scope_asks_rather_than_guesses(self):
+        """The classifier itself didn't fail here -- it just named
+        something code can't resolve on a first turn. This must be a
+        deterministic clarification, never an ai_unavailable-style
+        failure and never a silent default to broad."""
+        decision = resolve_topic_scope("unchanged", current_scope=None)
+        assert decision.scope is None
+        assert decision.needs_clarification
+        assert decision.clarification == UNCLEAR_TOPIC_MESSAGE
+
+    def test_unclear_asks_rather_than_guesses(self):
+        decision = resolve_topic_scope("unclear", current_scope=FINANCIAL)
+        assert decision.scope is None
+        assert decision.needs_clarification
 
 
-def test_timeline_question_routes_timeline():
-    assert route_question("Will I graduate later?").scope == TIMELINE
-    assert route_question("How long until I finish?").scope == TIMELINE
+class TestClarificationMessage:
+    def test_ambiguous_major_lists_real_display_names(self):
+        text = clarification_message(
+            "ambiguous_major",
+            majors=_MAJORS,
+            ambiguous_candidates=["psychology_ba", "psychology_bs"],
+        )
+        assert "Psychology (B.A.)" in text
+        assert "Psychology (B.S.)" in text
+
+    def test_ambiguous_option_change_reuses_option_intent_template(self):
+        text = clarification_message(
+            "ambiguous_option_change",
+            majors=_MAJORS,
+            option_change_action="remove",
+            active_options=["computer_science"],
+        )
+        assert "Which one" in text
+
+    def test_verdict_without_priority_is_the_fixed_message(self):
+        text = clarification_message("verdict_without_priority", majors=_MAJORS)
+        assert text == VERDICT_WITHOUT_PRIORITY_MESSAGE
+
+    def test_conflicting_priority_has_its_own_message(self):
+        text = clarification_message("conflicting_priority", majors=_MAJORS)
+        assert "priority" in text.lower()
+
+    def test_unclear_topic_falls_back_to_the_topic_menu(self):
+        text = clarification_message("unclear_topic", majors=_MAJORS)
+        assert text == UNCLEAR_TOPIC_MESSAGE
+
+    def test_unknown_clarification_type_defaults_safely(self):
+        # Defensive: a clarification_type the schema shouldn't allow
+        # through still produces something readable rather than crashing.
+        text = clarification_message(None, majors=_MAJORS)
+        assert text == UNCLEAR_TOPIC_MESSAGE
 
 
-def test_credits_question_routes_credits():
-    assert route_question("What happens to my credits?").scope == CREDITS
-    assert route_question("Do my classes transfer?").scope == CREDITS
+class TestAmbiguousMajorMessage:
+    def test_two_candidates_uses_and(self):
+        text = ambiguous_major_message(["psychology_ba", "psychology_bs"], _MAJORS)
+        assert "and" in text
 
-
-# --- broad markers beat inheritance -------------------------------------
-
-
-def test_broad_question_routes_broad():
-    d = route_question("Compare these majors")
-    assert d.scope == BROAD
-    assert d.intent == INTENT_EXPLICIT
-
-
-def test_biggest_difference_is_broad_not_a_ranking_request():
-    assert route_question("What's the biggest difference?").scope == BROAD
-
-
-def test_explicit_broad_overrides_a_narrow_current_scope():
-    """The bug this prevents: asking to widen right after a cost question
-    and getting another cost answer because inheritance fired first."""
-    d = route_question("What are the tradeoffs overall?", current_scope=FINANCIAL)
-    assert d.scope == BROAD
-    assert d.intent == INTENT_EXPLICIT
-
-
-# --- inheritance ---------------------------------------------------------
-
-
-def test_followup_with_no_topic_words_inherits():
-    d = route_question("Okay, what's working against me?", current_scope=FINANCIAL)
-    assert d.scope == FINANCIAL
-    assert d.intent == INTENT_INHERITED
-
-
-def test_short_continuation_inherits():
-    d = route_question("And Mechanical?", current_scope=CAREER)
-    assert d.scope == CAREER
-    assert d.intent == INTENT_INHERITED
-
-
-def test_explicit_topic_switch_beats_inheritance():
-    d = route_question("What about jobs?", current_scope=FINANCIAL)
-    assert d.scope == CAREER
-    assert d.intent == INTENT_EXPLICIT
-
-
-def test_the_documented_three_turn_sequence():
-    """Straight from the spec: cost, then a vague follow-up, then careers."""
-    first = route_question("Which one costs more?")
-    assert first.scope == FINANCIAL
-
-    second = route_question("Okay, what's working against me?", current_scope=first.scope)
-    assert second.scope == FINANCIAL
-
-    third = route_question("What about careers?", current_scope=second.scope)
-    assert third.scope == CAREER
-
-
-# --- defaults and ambiguity ----------------------------------------------
-
-
-def test_first_turn_with_no_context_defaults_broad():
-    d = route_question("Tell me about these options", current_scope=None)
-    assert d.scope == BROAD
-    assert d.intent == INTENT_DEFAULT_BROAD
-
-
-def test_verdict_seeking_question_asks_rather_than_answering():
-    """Fork doesn't pick a winner, so 'which is better' gets a redirect,
-    not a ranking."""
-    d = route_question("Which one is better?", current_scope=FINANCIAL)
-    assert d.needs_clarification
-    assert d.intent == INTENT_AMBIGUOUS
-    assert d.scope is None
-    assert "doesn't pick a winner" in d.clarification
-
-
-def test_clarification_does_not_propose_a_scope():
-    d = route_question("What should I do?", current_scope=CAREER)
-    assert d.scope is None
-
-
-def test_empty_message_keeps_current_scope():
-    assert route_question("   ", current_scope=TIMELINE).scope == TIMELINE
+    def test_unresolvable_candidates_still_asks(self):
+        text = ambiguous_major_message(["not_a_real_key"], _MAJORS)
+        assert "Which major" in text

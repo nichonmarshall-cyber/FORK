@@ -35,6 +35,7 @@ from pydantic import ValidationError
 from .comparison_inputs import ComparisonOption, MultiComparisonInputs
 from .engine import ChangeMajorResult
 from .formatter import _line_item as _serialize_line_item
+from .formatter import format_result
 
 # Status values an option can carry in the snapshot. Kept as constants so
 # the router, views, and endpoint can't drift on spelling.
@@ -49,12 +50,22 @@ class OptionOutcome:
     One alternative's place in the comparison — calculated, pending, or
     failed. A pending option is still part of the comparison; it just has
     a question attached to it instead of numbers.
+
+    `detail` carries the SAME formatted result the pairwise /calculate
+    endpoint returns. It's here because the Decision Map and node system
+    resolve from that exact shape (summary, comparison.staying/switching
+    line items, earnings and career context), and the dimension blocks
+    deliberately throw most of it away. Without it, switching which path
+    the map displays would mean recalculating something the fan-out
+    already computed — or worse, recomputing from draft form inputs
+    rather than the trusted snapshot.
     """
 
     major_key: str
     major_display: str
     status: str
     dimensions: dict | None = None
+    detail: dict | None = None
     missing_fields: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -66,6 +77,8 @@ class OptionOutcome:
         }
         if self.dimensions is not None:
             out["dimensions"] = self.dimensions
+        if self.detail is not None:
+            out["detail"] = self.detail
         if self.missing_fields:
             out["missing_fields"] = self.missing_fields
         if self.error:
@@ -147,11 +160,19 @@ def _dimensions_from_result(result: ChangeMajorResult) -> dict:
             "credits_required_prospective": li(result.prospective_path.credits_required),
             "credits_remaining_prospective": li(result.prospective_path.credits_remaining),
         },
-        "career": {
+        # Split in two on purpose: "earnings" (salary figures, permitted for
+        # FINANCIAL questions too -- see conversation/views.py's
+        # _SCOPE_BLOCKS) vs. "career" narrowed to occupations/job-market
+        # data (Job Market Demand), which stays CAREER-exclusive. A
+        # financial question shouldn't gain occupation data just to reach
+        # a salary figure.
+        "earnings": {
             "median_salary_current": li(result.current_major_median_salary),
             "median_salary_prospective": li(result.prospective_major_median_salary),
             "annual_salary_delta": li(result.annual_salary_delta),
             "earnings_context": result.earnings_context,
+        },
+        "career": {
             "career_context": result.career_context,
         },
         "program": {
@@ -263,6 +284,9 @@ def run_multi_comparison(
                 major_display=result.prospective_path.major_display,
                 status=STATUS_CALCULATED,
                 dimensions=_dimensions_from_result(result),
+                # Same formatter the pairwise endpoint uses, so the map
+                # gets a shape it already knows how to render.
+                detail=format_result(result),
             )
         )
         _merge_unique(assumptions, result.assumptions)

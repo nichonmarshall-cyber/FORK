@@ -35,6 +35,13 @@ from .inputs import ChangeMajorInputs
 # message need to agree on exactly one list.
 REQUIRED_OPTION_FIELDS = ("credits_transferable",)
 
+# The demo's comparison workspace is built around 2-4 alternatives. This
+# used to be enforced only by the manual form (MAX_OPTIONS in
+# frontend/components/form/MultiOptionInputs.tsx) -- fine while the form
+# was the only way to add an option, but Ask Fork's conversational "add"
+# now bypasses that form entirely, so the cap needs a real backend home.
+MAX_OPTIONS = 4
+
 
 class ComparisonOption(BaseModel):
     """
@@ -192,6 +199,17 @@ class MultiComparisonInputs(BaseModel):
             raise ValueError(
                 "A comparison needs at least one alternative major besides "
                 f"'{self.current_major}'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def at_most_max_options(self):
+        """See MAX_OPTIONS's comment -- real enforcement now that a chat
+        instruction can add an option outside the form's own guard."""
+        if len(self.options) > MAX_OPTIONS:
+            raise ValueError(
+                f"Fork compares up to {MAX_OPTIONS} alternatives at once. "
+                "Drop one first, or replace an existing one."
             )
         return self
 

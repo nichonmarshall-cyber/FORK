@@ -142,6 +142,12 @@ export interface ExplainRequest extends CalcRequest {
   selected_node_label?: string;
   selected_node_question?: string;
   available_nodes?: AvailableNode[];
+  // Optional continuity for Compare One's chat — lets Ask Fork resolve a
+  // topic-word-free follow-up and remember a stated priority across
+  // turns. Omitted (or unrecognized/expired server-side) just starts a
+  // fresh session; /explain still recomputes the projection itself
+  // either way. See conversation/session.py.
+  session_id?: string;
 }
 
 export interface ExplainKeyPoint {
@@ -159,7 +165,33 @@ export interface ExplainNextStep {
   reason: string;
 }
 
-export interface ExplainResponse {
+/** One clickable navigation chip. `major` is null for a plain node-only
+ * pill (Compare One always; Compare Multiple when there's no single
+ * relevant path — see conversation/orchestrator.py's _compute_navigation
+ * for the three-case rule this renders). A non-null `major` names which
+ * alternative's path the pill points to. */
+export interface NavigationPill {
+  major: string | null;
+  node_id: string;
+}
+
+/** What Ask Fork proactively focuses this turn, if anything — computed
+ * server-side from the same inputs as navigation_pills, never authored by
+ * the explanation model. `major: null` means "focus this node on
+ * whichever path is currently displayed"; a non-null major means the
+ * student explicitly named that alternative this turn, so the path
+ * switches too. See the architecture plan's auto-focus rule. */
+export interface NavigationTarget {
+  major: string | null;
+  node_id: string;
+}
+
+/** The explanation content itself — title/body sections, no navigation or
+ * status wrapping. Compare One's /explain merges this flat into its
+ * response (see ExplainResponse); Compare Multiple's /comparison/ask
+ * nests it under "answer" alongside sibling navigation/status fields
+ * (see ComparisonAskResponse). Same shape either way. */
+export interface DecisionExplanationCore {
   direct_answer: string;
   key_points: ExplainKeyPoint[];
   limitations: ExplainLimitation[];
@@ -170,12 +202,47 @@ export interface ExplainResponse {
   // is guaranteed to exist on the map. Still worth treating defensively
   // in the UI (see AskFork's NODES_BY_ID lookup) rather than assuming.
   related_node_ids: string[];
+}
+
+export interface ExplainResponse extends DecisionExplanationCore {
+  navigation_pills: NavigationPill[];
+  navigation_target: NavigationTarget | null;
+  // The classified topic scope for this turn, or null on a short-circuit
+  // response (e.g. a deterministic add-confirmation) that never reached
+  // the explanation step.
+  topic_scope: string | null;
   // True when the AI couldn't produce a valid, grounded structured
   // answer twice in a row and a deterministic template was used instead.
   // Still fully grounded and trustworthy — just plainer — so the UI
   // should show this as a quiet note, not an error.
   used_fallback: boolean;
 }
+
+/** One alternative's transfer-credit figure, applied via chat rather than
+ * the manual form — e.g. "switch to Computer Science; 61 credits apply."
+ * The frontend reacts to this by updating its own draft/calculated state
+ * and re-running the existing calculate/explain flow, the same trust
+ * path a manual form submission already goes through. */
+export interface AppliedOptionChange {
+  major: string;
+  credits_transferable: number | null;
+}
+
+/**
+ * The full shape /explain can now return. Compare One's chat can resolve
+ * an option-change instruction ("compare me to X instead") instead of
+ * answering a question that turn — see
+ * conversation.orchestrator.handle_pairwise_turn.
+ */
+export type ExplainTurnResponse =
+  | ({ status: "complete"; state: { session_id: string } } & ExplainResponse)
+  | { status: "clarification_required"; message: string; state: { session_id: string } }
+  | { status: "ai_unavailable"; message: string; state: { session_id: string } }
+  | {
+      status: "option_change_applied";
+      applied_option_change: AppliedOptionChange;
+      state: { session_id: string };
+    };
 
 /**
  * Every distinct failure shape the API (or the network under it) can
@@ -287,7 +354,7 @@ export class ApiError extends Error {
 
 export async function explainDecision(
   body: ExplainRequest,
-): Promise<ExplainResponse> {
+): Promise<ExplainTurnResponse> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/decision-paths/change-major/explain`, {
@@ -322,4 +389,192 @@ export function findLineItem(
   return all.find((li) =>
     li.label.toLowerCase().includes(fragment.toLowerCase()),
   );
+}
+// =====================================================================
+// Multi-option comparison
+// =====================================================================
+//
+// The pairwise calls above compare exactly two majors and replace their
+// result each time. These call the session-aware endpoints instead: one
+// request sets up a comparison across several alternatives, and every
+// question after that runs against the whole set at once.
+//
+// The backend holds the conversation state (which majors are active,
+// what topic is being discussed). The client holds only the session id.
+// That's deliberate — a future "Comparing: …" control and a typed
+// instruction like "just compare CS and IT" both have to change the same
+// state, and duplicating it here would let the two drift apart.
+
+/** One alternative in a multi-option comparison. credits_transferable is
+ * optional: leaving it out marks that option pending rather than failing
+ * the whole comparison, and the backend will say which field it needs. */
+export interface ComparisonOptionRequest {
+  major: string;
+  credits_transferable?: number;
+  credits_transferable_source?: string;
+}
+
+export interface StartComparisonRequest {
+  current_major: string;
+  credits_completed: number;
+  options: ComparisonOptionRequest[];
+  credits_source?: string;
+  credits_source_date?: string;
+  credits_in_progress?: number;
+  institution_id?: string;
+  /** Reuses an existing conversation when supplied. Omit to start fresh. */
+  session_id?: string;
+}
+
+/** Conversation state as the backend sees it. Read-only here — the client
+ * never edits this, it just renders it. */
+export interface ComparisonState {
+  session_id: string;
+  /** Includes the anchor (the student's current major) as the first entry. */
+  active_options: string[];
+  current_topic_scope: string;
+  last_topic_scope: string | null;
+  last_question_intent: string | null;
+  last_referenced_options: string[];
+  /** Set only when the student explicitly stated it this conversation —
+   * never inferred from a reaction. Survives topic and option-set
+   * changes; cleared only by an explicit statement or a session reset. */
+  stated_priority: string | null;
+  turn_count: number;
+}
+
+/** One alternative's outcome. "pending" means an input is missing and no
+ * figures were produced for it — the UI must not render a number for a
+ * pending option, because there isn't one. */
+export interface ComparisonOptionOutcome {
+  major_key: string;
+  major: string;
+  status: "calculated" | "pending" | "failed";
+  dimensions?: Record<string, Record<string, LineItem>>;
+  /** The full pairwise result for this alternative — the same shape
+   * /calculate returns, so the Decision Map and node system can render it
+   * directly. Present only on calculated options; a pending one has no
+   * result, and there must be no way for the UI to show a figure for it.
+   * This is what lets the path navigator switch which map is displayed
+   * without a network call or a recalculation. */
+  detail?: CalcResult;
+  missing_fields?: string[];
+  error?: string;
+}
+
+export interface MultiComparisonResponse {
+  status: "ready";
+  state: ComparisonState;
+  comparison: {
+    anchor: { major_key: string; major: string };
+    credits_completed: number;
+    options: ComparisonOptionOutcome[];
+    assumptions: string[];
+    limitations: string[];
+  };
+}
+
+/** A turn either answers, asks a question back, changes the comparison,
+ * or — if the intent-classification provider call itself fails — reports
+ * unavailability. Clarification and unavailability are both real
+ * outcomes, not errors: neither one guesses, and neither mutates
+ * active_options, topic scope, or stated priority. */
+export type ComparisonAskResponse =
+  | {
+      status: "complete";
+      state: ComparisonState;
+      answer: DecisionExplanationCore;
+      used_fallback: boolean;
+      navigation_pills: NavigationPill[];
+      navigation_target: NavigationTarget | null;
+      topic_scope: string | null;
+      /** Always present on "complete" now that a chat instruction can
+       * change the option set mid-conversation — the same shape
+       * /comparison/start returns, so the Decision Map and PathNavigator
+       * can show a genuinely new option the moment it's added. */
+      comparison: MultiComparisonResponse["comparison"] | null;
+    }
+  | {
+      status: "clarification_required";
+      state: ComparisonState;
+      message: string;
+    }
+  | {
+      status: "ai_unavailable";
+      state: ComparisonState;
+      message: string;
+    };
+
+export async function startComparison(
+  body: StartComparisonRequest,
+): Promise<MultiComparisonResponse> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE}/decision-paths/change-major/comparison/start`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (networkError) {
+    const parsed = parseApiError({ networkError });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  if (!res.ok) {
+    const parsedBody = await res.json().catch(() => null);
+    const parsed = parseApiError({ status: res.status, body: parsedBody });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  return res.json();
+}
+
+export async function askComparison(
+  sessionId: string,
+  message: string,
+  options?: {
+    /** Which alternative's map is currently displayed — a per-request
+     * hint, never persisted server-side. Used only to resolve "this one"
+     * and to decide whether an auto-focus should also switch paths;
+     * never affects active_options. */
+    selectedDetailPath?: string | null;
+    availableNodes?: AvailableNode[];
+  },
+): Promise<ComparisonAskResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/decision-paths/change-major/comparison/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message,
+        selected_detail_path: options?.selectedDetailPath ?? undefined,
+        available_nodes: options?.availableNodes ?? [],
+      }),
+    });
+  } catch (networkError) {
+    const parsed = parseApiError({ networkError });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  if (!res.ok) {
+    // 404 here specifically means the session is gone -- sessions live in
+    // the backend's memory and are cleared when it restarts. Worth its own
+    // message, since "try again" is wrong advice: the comparison has to be
+    // set up again.
+    if (res.status === 404) {
+      throw new ApiError(
+        "That comparison isn't available any more. Set it up again to continue.",
+      );
+    }
+    const parsedBody = await res.json().catch(() => null);
+    const parsed = parseApiError({ status: res.status, body: parsedBody });
+    throw new ApiError(parsed.message, parsed.field);
+  }
+
+  return res.json();
 }

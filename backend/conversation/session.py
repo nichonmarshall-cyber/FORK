@@ -52,6 +52,62 @@ class UserTurn:
 
 
 @dataclass
+class PendingFieldRequest:
+    """Set when Fork just asked a direct, deterministic question about one
+    missing field on one option — e.g. "how many of your credits apply to
+    Psychology B.S.?" — so the *next* turn can resolve a bare numeric
+    reply ("61") without an AI round-trip. Cleared the moment it's
+    answered or the student says something else instead. See
+    orchestrator.py."""
+
+    major: str
+    field: str
+
+
+@dataclass
+class PendingOptionAction:
+    """
+    Set when an option-change instruction couldn't fully resolve --
+    either the classifier itself asked for clarification (a "replace"
+    with no target major named), or a resolved change failed validation
+    (e.g. MAX_OPTIONS). Carries whatever WAS understood about the
+    instruction, so a follow-up ("psychology bs", "can you replace it")
+    can be interpreted in light of it instead of starting from nothing.
+
+    This is validated, structured metadata Fork itself produced from the
+    student's own words -- not AI prose, and not a fact the explanation
+    layer could treat as evidence. It exists purely to keep the
+    CONVERSATION coherent across a clarification, the same way
+    last_referenced_options already does for topic follow-ups. See
+    orchestrator.py's _apply_option_change and clarification handling.
+    """
+
+    action: str  # one of option_intent.py's ACTION_* constants
+    remove_majors: list[str] = field(default_factory=list)
+    add_majors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PendingAnalysisQuestion:
+    """
+    Set when a turn resolved a real, freshly-stated analytical topic (not
+    "unchanged") but couldn't be answered THIS turn because a required
+    field was missing -- e.g. "replace Psych BA with Psych BS, then tell
+    me which is fastest" when Psych BS's transfer credits aren't known
+    yet. Consulted once the blocking field is filled, so the student
+    never has to repeat the question. `topic_scope` is a resolved,
+    concrete scope (never "unchanged"/"unclear"); `original_message` is
+    the student's own words, used to frame the resumed explanation call.
+
+    Discarded immediately by any turn that doesn't resolve the pending
+    field it's paired with -- see orchestrator.py's lifetime handling.
+    """
+
+    topic_scope: str
+    original_message: str
+
+
+@dataclass
 class ConversationSession:
     session_id: str
 
@@ -75,6 +131,33 @@ class ConversationSession:
     last_topic_scope: str | None = None
     last_referenced_options: list[str] = field(default_factory=list)
     last_question_intent: str | None = None
+
+    # An explicitly stated priority (one of the topic-scope constants),
+    # set only from a validated ConversationIntent.priority_update — never
+    # inferred from a reaction like "CS looks nice". Survives topic and
+    # option-set changes; cleared only by an explicit statement or a
+    # session reset. See apply_priority_update().
+    stated_priority: str | None = None
+
+    # Set when Fork's last turn ended in a direct, deterministic ask for
+    # one missing field on one option (see PendingFieldRequest). Consulted
+    # by the orchestrator before running full intent classification on the
+    # next message, so a bare numeric reply doesn't need an AI call.
+    pending_field_request: PendingFieldRequest | None = None
+
+    # Set when an option-change instruction (add/remove/replace) couldn't
+    # fully resolve this turn (see PendingOptionAction). Passed to the
+    # classifier as context on the next turn so a short follow-up gets
+    # interpreted as completing THIS pending action, and so a repeated
+    # clarification asks about the right thing instead of defaulting to
+    # a generic "which major should I add?".
+    pending_option_action: PendingOptionAction | None = None
+
+    # Set alongside pending_field_request when the same turn that
+    # triggered it also asked a real, freshly-stated analytical question
+    # (see PendingAnalysisQuestion). Always set and cleared together with
+    # pending_field_request -- they share one lifetime.
+    pending_analysis_question: PendingAnalysisQuestion | None = None
 
     turns: list[UserTurn] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
@@ -101,6 +184,34 @@ class ConversationSession:
             self.last_topic_scope = self.current_topic_scope
         self.current_topic_scope = scope
         self.last_question_intent = intent
+        self.updated_at = time.time()
+
+    # --- priority ----------------------------------------------------------
+
+    def apply_priority_update(self, priority_update: str | None) -> None:
+        """Only ever called with a validated ConversationIntent.priority_update.
+        None means "no statement this turn" and leaves stated_priority
+        untouched — most turns don't restate a priority, and silence must
+        never read as retraction. "cleared" is the one explicit removal
+        path; anything else overwrites the prior value outright, since
+        only one priority is stored at a time (see the schema's
+        conflicting_priority clarification for the case where a single
+        message states two at once — nothing is committed there)."""
+        if priority_update is None:
+            return
+        self.stated_priority = None if priority_update == "cleared" else priority_update
+        self.updated_at = time.time()
+
+    # --- inputs (Compare Multiple only) -------------------------------------
+
+    def set_inputs(self, inputs: MultiComparisonInputs) -> None:
+        """Replace the session's comparison inputs mid-conversation — used
+        when a chat instruction adds a genuinely new option or fills in a
+        previously-missing transfer figure. Deliberately just an
+        assignment: the next ensure_snapshot() call detects the changed
+        inputs_fingerprint() and rebuilds automatically, so there's
+        nothing else to invalidate here."""
+        self.inputs = inputs
         self.updated_at = time.time()
 
     # --- turns -----------------------------------------------------------
@@ -160,6 +271,7 @@ class ConversationSession:
             "last_topic_scope": self.last_topic_scope,
             "last_question_intent": self.last_question_intent,
             "last_referenced_options": list(self.last_referenced_options),
+            "stated_priority": self.stated_priority,
             "turn_count": len(self.turns),
         }
 

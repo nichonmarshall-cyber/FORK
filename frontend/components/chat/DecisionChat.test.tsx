@@ -8,7 +8,7 @@ vi.mock("@/lib/types", async (importOriginal) => {
   return { ...actual, explainDecision: vi.fn() };
 });
 
-import { ApiError, ExplainResponse, explainDecision } from "@/lib/types";
+import { ApiError, ExplainTurnResponse, explainDecision } from "@/lib/types";
 
 const CALC_RESULT = {
   summary: {
@@ -24,7 +24,9 @@ const CALC_INPUTS = {
   credits_transferable: 66,
 };
 
-const ANSWER: ExplainResponse = {
+const ANSWER: ExplainTurnResponse = {
+  status: "complete",
+  state: { session_id: "test-session" },
   direct_answer: "The biggest difference is the earnings comparison.",
   key_points: [
     { title: "Shared category", explanation: "Both majors report under one federal category." },
@@ -35,6 +37,9 @@ const ANSWER: ExplainResponse = {
   still_useful_for: ["Estimating tuition impact"],
   next_step: { action: "Request a what-if audit.", reason: "It would confirm credits." },
   related_node_ids: ["financial"],
+  navigation_pills: [{ major: null, node_id: "financial" }],
+  navigation_target: null,
+  topic_scope: "broad",
   used_fallback: false,
 };
 
@@ -126,12 +131,17 @@ describe("DecisionChat", () => {
 
   it("omits sections that have no content", async () => {
     vi.mocked(explainDecision).mockResolvedValueOnce({
+      status: "complete",
+      state: { session_id: "test-session" },
       direct_answer: "Short answer.",
       key_points: [],
       limitations: [],
       still_useful_for: [],
       next_step: null,
       related_node_ids: [],
+      navigation_pills: [],
+      navigation_target: null,
+      topic_scope: "broad",
       used_fallback: false,
     });
     renderChat();
@@ -156,7 +166,7 @@ describe("DecisionChat", () => {
   });
 
   it("shows the loading placeholder without clearing prior messages", async () => {
-    let resolveSecond: (v: ExplainResponse) => void = () => {};
+    let resolveSecond: (v: ExplainTurnResponse) => void = () => {};
     vi.mocked(explainDecision)
       .mockResolvedValueOnce({ ...ANSWER, direct_answer: "First answer." })
       .mockReturnValueOnce(new Promise((r) => { resolveSecond = r; }));
@@ -220,7 +230,7 @@ describe("DecisionChat", () => {
   });
 
   it("blocks duplicate submissions while a request is in flight", async () => {
-    let resolve: (v: ExplainResponse) => void = () => {};
+    let resolve: (v: ExplainTurnResponse) => void = () => {};
     vi.mocked(explainDecision).mockReturnValueOnce(
       new Promise((r) => { resolve = r; }),
     );
@@ -445,6 +455,67 @@ describe("DecisionChat", () => {
     expect(serialized).not.toContain(ANSWER.direct_answer);
     expect(serialized).not.toContain("Shared category");
     expect(secondRequest.question).toBe("Break down the additional cost");
+  });
+
+  it("shows the ai_unavailable message (not the generic failure copy) and never mutates prior turns", async () => {
+    vi.mocked(explainDecision)
+      .mockResolvedValueOnce({ ...ANSWER, direct_answer: "First answer." })
+      .mockResolvedValueOnce({
+        status: "ai_unavailable",
+        message:
+          "Ask Fork is temporarily unavailable. Your calculated comparison has not been affected. Please try again in a moment.",
+        state: { session_id: "test-session" },
+      });
+    renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(screen.getByText("First answer.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare the career outlook" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Ask Fork is temporarily unavailable/),
+      ).toBeInTheDocument(),
+    );
+    // Distinct from the generic explanation-failure copy -- a provider
+    // outage during intent classification is a different situation from
+    // the explanation step failing after a successfully resolved intent.
+    expect(
+      screen.queryByText(
+        "Fork could not generate an explanation right now. Your decision results are still available.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByText("First answer.")).toBeInTheDocument();
+  });
+
+  it("auto-focuses the node a navigation_target names, without a major, on a single-node answer", async () => {
+    const onSelectNode = vi.fn();
+    vi.mocked(explainDecision).mockResolvedValueOnce({
+      ...ANSWER,
+      navigation_target: { major: null, node_id: "financial" },
+    });
+    renderChat({ onSelectNode });
+
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() => expect(onSelectNode).toHaveBeenCalledWith("financial"));
+  });
+
+  it("does not auto-focus when navigation_target is null (multi-node or multi-major answer)", async () => {
+    const onSelectNode = vi.fn();
+    vi.mocked(explainDecision).mockResolvedValueOnce({
+      ...ANSWER,
+      navigation_target: null,
+    });
+    renderChat({ onSelectNode });
+
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("The biggest difference is the earnings comparison."),
+      ).toBeInTheDocument(),
+    );
+    expect(onSelectNode).not.toHaveBeenCalled();
   });
 
   it("is disabled until a calculation exists", () => {

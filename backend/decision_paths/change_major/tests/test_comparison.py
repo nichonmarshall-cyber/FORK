@@ -227,9 +227,9 @@ def test_unavailable_earnings_stay_none_never_zero():
     inputs = _inputs([ComparisonOption(major="computer_science", credits_transferable=66)])
     snapshot = run_multi_comparison(inputs, data, calculate=calculate)
 
-    career = snapshot.calculated()[0].dimensions["career"]
-    assert career["annual_salary_delta"]["value"] is None
-    assert career["annual_salary_delta"]["status"] == "unavailable"
+    earnings = snapshot.calculated()[0].dimensions["earnings"]
+    assert earnings["annual_salary_delta"]["value"] is None
+    assert earnings["annual_salary_delta"]["status"] == "unavailable"
 
 
 def test_snapshot_dict_shape():
@@ -251,3 +251,44 @@ def test_unknown_anchor_raises():
     )
     with pytest.raises(ValueError, match="Unknown current_major"):
         run_multi_comparison(inputs, _reference_data(), calculate=calculate)
+
+
+def test_calculated_option_carries_the_full_pairwise_detail():
+    """The Decision Map resolves from the pairwise formatted shape, so
+    each calculated option has to carry it — otherwise switching which
+    path is displayed would mean recalculating what the fan-out already
+    computed."""
+    inputs = _inputs([ComparisonOption(major="computer_science", credits_transferable=66)])
+    snapshot = run_multi_comparison(inputs, _reference_data(), calculate=calculate)
+
+    detail = snapshot.calculated()[0].detail
+    assert detail is not None
+    assert detail["summary"]["current_major"] == "Psychology"
+    assert detail["summary"]["prospective_major"] == "Computer Science"
+    assert "staying" in detail["comparison"]
+    assert "switching" in detail["comparison"]
+    assert detail["comparison"]["staying"]["line_items"]
+    assert "earnings_context" in detail
+    assert "career_context" in detail
+
+
+def test_detail_matches_a_direct_pairwise_run():
+    """Fan-out must produce byte-identical numbers to running the pairwise
+    engine directly — it IS the pairwise engine, and a divergence would
+    mean the orchestration layer had started doing math of its own."""
+    from decision_paths.change_major.formatter import format_result
+
+    data = _reference_data()
+    inputs = _inputs([ComparisonOption(major="computer_science", credits_transferable=66)])
+    snapshot = run_multi_comparison(inputs, data, calculate=calculate)
+
+    direct = format_result(
+        calculate(inputs.to_pairwise_inputs(inputs.options[0]), data)
+    )
+    assert snapshot.calculated()[0].detail == direct
+
+
+def test_pending_option_has_no_detail():
+    inputs = _inputs([ComparisonOption(major="mechanical_engineering")])
+    snapshot = run_multi_comparison(inputs, _reference_data(), calculate=calculate)
+    assert snapshot.pending()[0].detail is None

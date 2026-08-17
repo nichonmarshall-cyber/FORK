@@ -53,11 +53,16 @@ def _dimensions(tuition=8000, semesters=2, credits_lost=6, salary=39839):
             "credits_required_prospective": _line(120),
             "credits_remaining_prospective": _line(54),
         },
-        "career": {
+        # Split to mirror comparison.py's _dimensions_from_result(): salary
+        # figures live under "earnings" (permitted for FINANCIAL too),
+        # occupations/job-market data stays under the narrower "career".
+        "earnings": {
             "median_salary_current": _line(30396),
             "median_salary_prospective": _line(70235),
             "annual_salary_delta": _line(salary),
             "earnings_context": [],
+        },
+        "career": {
             "career_context": [],
         },
         "program": {"official_program_name": "BS in Computer Science", "degree_type": "BS"},
@@ -108,13 +113,14 @@ ALL_ACTIVE = [
 def test_broad_view_includes_every_dimension():
     view = build_view(_snapshot(), BROAD, ALL_ACTIVE)
     data = view["options"][0]["data"]
-    assert set(data) == {"financial", "timeline", "credits", "career", "program"}
+    assert set(data) == {"financial", "timeline", "credits", "earnings", "career", "program"}
 
 
 def test_career_view_excludes_financial_data():
     view = build_view(_snapshot(), CAREER, ALL_ACTIVE)
     data = view["options"][0]["data"]
     assert "career" in data
+    assert "earnings" in data
     assert "financial" not in data
 
 
@@ -128,6 +134,16 @@ def test_financial_view_keeps_the_figures_that_drive_cost():
     assert "career" not in data
 
 
+def test_financial_view_gains_earnings_but_not_occupations():
+    """Permitted per the architecture: early-career earnings context is
+    financially relevant, but Job Market Demand/occupation data is not --
+    that stays CAREER-exclusive even though it used to live in the same
+    combined block."""
+    data = build_view(_snapshot(), FINANCIAL, ALL_ACTIVE)["options"][0]["data"]
+    assert "earnings" in data
+    assert "career" not in data
+
+
 def test_timeline_view_keeps_credits():
     data = build_view(_snapshot(), TIMELINE, ALL_ACTIVE)["options"][0]["data"]
     assert set(data) == {"timeline", "credits"}
@@ -137,6 +153,7 @@ def test_credits_view_scope():
     data = build_view(_snapshot(), CREDITS, ALL_ACTIVE)["options"][0]["data"]
     assert "credits" in data
     assert "career" not in data
+    assert "earnings" not in data
     assert "financial" not in data
 
 

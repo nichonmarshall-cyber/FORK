@@ -35,10 +35,17 @@ from .router import BROAD, CAREER, CREDITS, FINANCIAL, TIMELINE
 # extra cost, and a timeline answer needs credits because unapplied
 # credits are what drive extra semesters. Leaving those out would produce
 # answers that state a number and can't explain it.
+#
+# "earnings" (salary figures + Career/Salary Outlook trajectory) and
+# "career" (occupations/Job Market Demand only) are deliberately separate
+# blocks -- see _dimensions_from_result() in comparison.py. FINANCIAL is
+# authorized for "earnings" specifically (permitted early-career context)
+# without gaining Job Market Demand/occupation data, which stays
+# CAREER-exclusive.
 _SCOPE_BLOCKS: dict[str, tuple[str, ...]] = {
-    BROAD: ("financial", "timeline", "credits", "career", "program"),
-    FINANCIAL: ("financial", "timeline", "credits"),
-    CAREER: ("career",),
+    BROAD: ("financial", "timeline", "credits", "earnings", "career", "program"),
+    FINANCIAL: ("financial", "timeline", "credits", "earnings"),
+    CAREER: ("earnings", "career"),
     TIMELINE: ("timeline", "credits"),
     CREDITS: ("credits", "timeline", "program"),
 }
@@ -48,6 +55,7 @@ def build_view(
     snapshot: MultiComparisonSnapshot,
     scope: str,
     active_options: list[str],
+    stated_priority: str | None = None,
 ) -> dict:
     """
     The authorized view for one turn.
@@ -96,6 +104,11 @@ def build_view(
         # confident answer with its caveats stripped off.
         "assumptions": snapshot.assumptions,
         "limitations": snapshot.limitations,
+        # Only ever set when the student explicitly stated it (see
+        # ConversationSession.stated_priority) -- lets the explanation
+        # anchor a verdict-shaped answer to a priority the student actually
+        # gave, without Fork inventing one or ranking dimensions itself.
+        "stated_priority": stated_priority,
     }
 
 

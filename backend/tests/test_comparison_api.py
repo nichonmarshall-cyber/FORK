@@ -22,10 +22,14 @@ ASK = "/decision-paths/change-major/comparison/ask"
 
 @pytest.fixture(autouse=True)
 def stub_the_model(monkeypatch):
-    """No API key needed. The explanation layer is exercised in its own
-    tests; here it just has to not be a network call."""
+    """No API key needed. Natural-language understanding and the
+    explanation layer are each exercised in their own tests (ai/test_intent.py,
+    ai/test_grounding.py, conversation/test_orchestrator.py) -- here a
+    small deterministic fake stands in for the real classifier and
+    explainer so these HTTP-level tests can assert on the plumbing and
+    state handling without a live model call."""
 
-    def fake_explain(view, question):
+    def fake_explain(view, question, available_nodes=None):
         from ai.interface import DecisionExplanation
 
         return {
@@ -35,12 +39,68 @@ def stub_the_model(monkeypatch):
             "used_fallback": False,
         }
 
+    def fake_classify(
+        message,
+        valid_majors,
+        current_topic_scope,
+        active_options,
+        stated_priority,
+        selected_detail_path,
+        pending_option_action=None,
+        known_option_credits=None,
+        pending_field_request=None,
+    ):
+        from ai.interface import ConversationIntent, OptionMajorInput
+
+        text = message.lower()
+        if "cost" in text:
+            return ConversationIntent(topic_scope="financial")
+        if "career" in text:
+            return ConversationIntent(topic_scope="career")
+        if "just compare cs and it" in text:
+            return ConversationIntent(
+                topic_scope="unchanged",
+                option_change="replace",
+                add_options=[
+                    OptionMajorInput(major="computer_science"),
+                    OptionMajorInput(major="information_technology"),
+                ],
+            )
+        if "leaning toward" in text:
+            # A preference, not an instruction -- no topic word either, so
+            # a real classifier with nothing to inherit from would default
+            # broad rather than offer "unchanged" with nothing behind it.
+            return ConversationIntent(topic_scope="broad")
+        if "better" in text or "best" in text:
+            return ConversationIntent(
+                topic_scope="unclear",
+                needs_clarification=True,
+                clarification_type="verdict_without_priority",
+            )
+        return ConversationIntent(topic_scope="broad")
+
     import conversation.orchestrator as orch
 
     original = orch.handle_turn
 
-    def patched(session, message, reference_data, explain=None):
-        return original(session, message, reference_data, explain=fake_explain)
+    def patched(
+        session,
+        message,
+        reference_data,
+        selected_detail_path=None,
+        available_nodes=None,
+        classify=None,
+        explain=None,
+    ):
+        return original(
+            session,
+            message,
+            reference_data,
+            selected_detail_path=selected_detail_path,
+            available_nodes=available_nodes,
+            classify=fake_classify,
+            explain=fake_explain,
+        )
 
     monkeypatch.setattr(main, "handle_turn", patched)
 
