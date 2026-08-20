@@ -1,17 +1,6 @@
-.vscode/
-PROJECT_ROADMAP.md
-
-# Python-generated files
-__pycache__/
-*.py[cod]
-.pytest_cache/
-
-# Virtual environments
-.venv/
-venv/
-
 # Secrets
 .env
+
 # Raw federal datasets. Large, redistributable from the source, and
 # converted into a small processed file by scripts/import_scorecard.py.
 # Only the processed output belongs in the repo.
@@ -22,3 +11,11 @@ CIP2020_SOC2018_Crosswalk.xlsx
 oesm25nat*.zip
 oesm25nat/
 Employment_Projections.csv
+
+# Academic documents. A degree audit is an education record containing a
+# student ID and a full grade history, and this application has no auth,
+# no encryption at rest, and no retention policy. Real audits never get
+# committed — run tools/redact_audit.py and commit the redacted text
+# fixture instead.
+*.pdf
+!backend/audit_import/unt/tests/fixtures/*.pdf
