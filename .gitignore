@@ -12,3 +12,5 @@ venv/
 
 # Secrets
 .env
+*.pdf
+!backend/audit_import/unt/tests/fixtures/*.pdf
