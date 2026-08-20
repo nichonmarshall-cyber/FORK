@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useId, useRef, useState } from "react";
+import AuditPanel from "@/components/AuditPanel";
 import DecisionMap from "@/components/DecisionMap";
 import DecisionChat from "@/components/chat/DecisionChat";
 import NodePanel from "@/components/NodePanel";
@@ -8,6 +9,7 @@ import Sidebar from "@/components/Sidebar";
 import { NODES_BY_ID, payDelta } from "@/lib/nodes";
 import { ApiError, CalcResult, calculateChangeMajor } from "@/lib/types";
 import { validateCreditsPair } from "@/lib/validation";
+import { AuditSession } from "@/lib/audit";
 
 /**
  * Major keys have to match the reference JSON exactly. Listed here rather
@@ -63,6 +65,44 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // The confirmed audit, when there is one. Held alongside the manual
+  // fields rather than replacing them: reverting has to restore what the
+  // student typed, so those values are never overwritten -- see
+  // handleAuditConfirmed, which saves them before prefilling.
+  const [auditSession, setAuditSession] = useState<AuditSession | null>(null);
+  const [manualBackup, setManualBackup] = useState<{
+    completed: string;
+    transferable: string;
+  } | null>(null);
+
+  const auditInputs = auditSession?.change_major_inputs ?? null;
+  const auditActive = auditSession?.uploaded_source.is_active ?? false;
+  // The one figure a degree audit doesn't establish. The backend says so
+  // explicitly rather than the frontend inferring it from an absent field,
+  // and it ships the sentence to show -- so when a matcher exists and the
+  // entry disappears, this field stops explaining itself automatically.
+  const transferableUnavailable =
+    auditInputs?.unavailable.find((u) => u.field === "credits_transferable") ?? null;
+
+  function handleAuditConfirmed(session: AuditSession) {
+    const inputs = session.change_major_inputs;
+    if (!inputs) return;
+    // Saved before the overwrite, so "go back to entering credits myself"
+    // returns the student's own numbers rather than an empty form.
+    setManualBackup({ completed: completedRaw, transferable: transferableRaw });
+    setCompletedRaw(String(inputs.credits_completed));
+    // credits_transferable is deliberately left alone: the audit doesn't
+    // establish it, so whatever the student entered stands.
+  }
+
+  function handleAuditReverted() {
+    if (manualBackup) {
+      setCompletedRaw(manualBackup.completed);
+      setTransferableRaw(manualBackup.transferable);
+      setManualBackup(null);
+    }
+  }
+
   const completedRef = useRef<HTMLInputElement>(null);
   const transferableRef = useRef<HTMLInputElement>(null);
 
@@ -97,6 +137,17 @@ export default function Home() {
         prospective_major: prospectiveMajor,
         credits_completed: validation.completed.value as number,
         credits_transferable: validation.transferable.value as number,
+        // Provenance travels with the figures so the panel can say which
+        // came from a document and which the student estimated. When no
+        // audit is active these are omitted and the backend's
+        // "Student-reported" defaults apply, exactly as before.
+        ...(auditActive && auditInputs
+          ? {
+              credits_source: auditInputs.credits_source,
+              credits_source_date: auditInputs.credits_source_date,
+              credits_in_progress: auditInputs.credits_in_progress,
+            }
+          : {}),
       });
       setResult(data);
       setCalculatedInputs({
@@ -154,17 +205,34 @@ export default function Home() {
                 displayValue={validation.completed.display}
                 onChange={setCompletedRaw}
                 onBlur={() => setTouched((t) => ({ ...t, completed: true }))}
-                hint="Courses you've finished and passed."
+                hint={
+                  auditActive
+                    ? "From your confirmed UNT degree audit."
+                    : "Courses you've finished and passed."
+                }
                 error={showCompletedError ? validation.completed.error : null}
+                provenance={auditActive ? "document" : null}
               />
               <NumberField
                 ref={transferableRef}
-                label="Credits that transfer"
+                label={
+                  auditActive
+                    ? `Credits that apply to ${
+                        MAJORS.find((m) => m.key === prospectiveMajor)?.label ??
+                        "the new major"
+                      }`
+                    : "Credits that transfer"
+                }
                 displayValue={validation.transferable.display}
                 onChange={setTransferableRaw}
                 onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
-                hint="Counting toward the new degree, electives included."
+                hint={
+                  transferableUnavailable
+                    ? transferableUnavailable.user_message
+                    : "Counting toward the new degree, electives included."
+                }
                 error={showTransferableError ? validation.transferable.error : null}
+                provenance={auditActive ? "student" : null}
               />
             </div>
 
@@ -197,6 +265,13 @@ export default function Home() {
               {loading ? "Calculating…" : "Show me the difference"}
             </button>
           </form>
+
+          <AuditPanel
+            session={auditSession}
+            onSession={setAuditSession}
+            onConfirmed={handleAuditConfirmed}
+            onReverted={handleAuditReverted}
+          />
 
           {error && (
             <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-rose-300">
@@ -436,6 +511,11 @@ interface NumberFieldProps {
   onBlur: () => void;
   hint: string;
   error: string | null;
+  /** Where this value came from, shown as a small badge beside the label.
+   * Only set once an audit is confirmed -- with everything typed by hand
+   * there's nothing to distinguish, and badging every field would be
+   * noise. */
+  provenance?: "document" | "student" | null;
 }
 
 // forwardRef called with NO explicit generic arguments on purpose: a
@@ -447,14 +527,26 @@ interface NumberFieldProps {
 // function's own signature, which sidesteps the ambiguous syntax
 // entirely rather than trying to work around it.
 function NumberFieldInner(
-  { label, displayValue, onChange, onBlur, hint, error }: NumberFieldProps,
+  { label, displayValue, onChange, onBlur, hint, error, provenance }: NumberFieldProps,
   ref: React.ForwardedRef<HTMLInputElement>,
 ) {
   const errorId = useId();
   return (
     <label className="block">
-      <span className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
-        {label}
+      <span className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
+          {label}
+        </span>
+        {provenance === "document" && (
+          <span className="rounded-full border border-emerald-400/30 bg-emerald-400/[0.08] px-1.5 py-0.5 text-[9.5px] uppercase tracking-[0.1em] text-emerald-300/90">
+            From your audit
+          </span>
+        )}
+        {provenance === "student" && (
+          <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[9.5px] uppercase tracking-[0.1em] text-slate-400">
+            Your estimate
+          </span>
+        )}
       </span>
       <input
         ref={ref}
