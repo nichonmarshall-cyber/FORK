@@ -4,9 +4,10 @@ API tests for the degree-audit session endpoints.
 Also asserts the thing this batch most needed not to break: the existing
 manual Change Major path still works exactly as it did, untouched by any of
 the new machinery.
-"""
 
-from pathlib import Path
+The audit_pdf fixture lives in conftest.py — shared with
+test_audit_engine_integration.py rather than defined twice.
+"""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,44 +15,11 @@ from fastapi.testclient import TestClient
 import main
 from session.store import academic_sessions
 
-FIXTURES = Path(__file__).resolve().parent.parent / "audit_import/unt/tests/fixtures"
-
 
 @pytest.fixture
 def client():
     academic_sessions.clear()
     return TestClient(main.app)
-
-
-@pytest.fixture
-def audit_pdf():
-    """Build a PDF carrying the redacted fixture text.
-
-    The real audits stay out of the repository, so the integration path is
-    exercised against a generated PDF containing the same text. A sanitized
-    PDF-level fixture can replace this without the tests changing shape.
-    """
-    pytest.importorskip("reportlab", reason="reportlab not installed")
-    import io
-
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-
-    text = (FIXTURES / "unt_audit_standard.txt").read_text()
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=letter)
-    pdf.setFont("Courier", 7)
-
-    y = 760
-    for line in text.split("\n"):
-        if y < 30:
-            pdf.showPage()
-            pdf.setFont("Courier", 7)
-            y = 760
-        pdf.drawString(20, y, line[:120])
-        y -= 8
-    pdf.save()
-    return buffer.getvalue()
 
 
 # --- Manual mode is untouched ------------------------------------------
@@ -79,6 +47,9 @@ def test_manual_provenance_still_defaults_to_student_reported(client):
         "/decision-paths/change-major/calculate",
         json={
             "current_major": "computer_science",
+            # psychology_ba rather than psychology: UNT offers the program as
+            # both a B.A. and a B.S., and the API asks which rather than
+            # picking one.
             "prospective_major": "psychology_ba",
             "credits_completed": 60,
             "credits_transferable": 45,
@@ -222,8 +193,14 @@ def test_no_endpoint_claims_verification(client, audit_pdf):
 
 
 def test_no_calculation_is_exposed_yet(client, audit_pdf):
-    """The matcher isn't built. Nothing here may emit transferable credits or a
-    remaining-hours figure, because nothing yet stands behind one."""
+    """No degree math. The confirmed record supplies the hours the audit
+    states and nothing derived from matching coursework against a program,
+    because there is no matcher.
+
+    Asserted on the shape rather than on the absence of a string: the
+    payload now names credits_transferable in order to say it can't supply
+    one, and that mention is the honest behaviour, not a leak.
+    """
     session_id = client.post(
         "/audit/unt/upload",
         files={"file": ("audit.pdf", audit_pdf, "application/pdf")},
@@ -231,6 +208,15 @@ def test_no_calculation_is_exposed_yet(client, audit_pdf):
     client.post(f"/audit/session/{session_id}/confirm")
 
     body = client.get(f"/audit/session/{session_id}").json()
-    assert "credits_transferable" not in str(body)
-    assert "prospective_credits_required" not in str(body)
+    inputs = body["change_major_inputs"]
+
+    # Supplied: the two figures the document states.
+    assert inputs["credits_completed"] == 81
+    assert inputs["credits_in_progress"] == 18
+
+    # Not supplied, and named as unavailable rather than silently absent.
+    assert "credits_transferable" not in inputs
+    assert "prospective_credits_required" not in inputs
+    assert [u["field"] for u in inputs["unavailable"]] == ["credits_transferable"]
+
     assert body.get("degree_match_results") is None

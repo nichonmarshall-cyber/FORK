@@ -439,6 +439,16 @@ def _session_payload(session) -> dict:
     }
     if session.uploaded_record is not None:
         payload["review"] = build_review(session.uploaded_record).model_dump()
+
+    # Only once confirmed. Before that the record is something Fork read but
+    # the student hasn't checked, and offering engine inputs from it would
+    # invite a caller to skip the review step entirely.
+    from adapters.confirmed_record_to_inputs import build_inputs_from_confirmed_record
+
+    engine_inputs = build_inputs_from_confirmed_record(session)
+    if engine_inputs is not None:
+        payload["change_major_inputs"] = engine_inputs.model_dump(mode="json")
+
     return payload
 
 
