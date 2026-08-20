@@ -175,6 +175,164 @@ async def parse_degree_audit(file: UploadFile = File(...)):
         "requires_confirmation": True,
     }
 
+# ---------------------------------------------------------------------------
+# UNT degree audit: upload, review, correct, confirm.
+#
+# Separate from /audit/parse above, which stays as the school-agnostic path for
+# documents this parser doesn't recognise. These routes produce a normalized
+# academic record held in a server-side session, and none of them calculate
+# anything — the matcher isn't built, and wiring incomplete totals into the
+# Change Major engine would put a number on screen that nothing stands behind.
+# ---------------------------------------------------------------------------
+
+
+class CorrectionBody(BaseModel):
+    field: str
+    value: str | float | None = None
+    course_key: str | None = None
+
+
+def _session_or_404(session_id: str):
+    from session.store import SessionNotFound, academic_sessions
+
+    try:
+        return academic_sessions.get(session_id)
+    except SessionNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail="That session has expired or doesn't exist. Uploading the "
+                   "document again will start a new one.",
+        )
+
+
+def _session_payload(session) -> dict:
+    from audit_import.unt.review import build_review
+    # active_mode and uploaded_source are deliberately separate. A parsed
+    # record awaiting review exists while manual is still active, and a client
+    # that derives one from the other cannot see that state.
+    payload = {
+        "session_id": session.session_id,
+        "active_mode": session.mode.value,
+        "uploaded_source": session.uploaded_source.model_dump(mode="json"),
+        "active_source_label": session.active_source_description,
+    }
+    if session.uploaded_record is not None:
+        payload["review"] = build_review(session.uploaded_record).model_dump()
+    return payload
+
+
+@app.post("/audit/unt/upload")
+async def upload_unt_audit(file: UploadFile = File(...)):
+    """Parse a UNT degree audit and open a session holding the result.
+
+    The record starts unconfirmed and the session starts in manual mode. A
+    document Fork has read but the student hasn't checked is not yet something
+    to calculate from.
+
+    The file is parsed in memory and discarded. An audit carries a student ID
+    and a full grade history, and this application has no authentication and no
+    retention policy, so it doesn't get saved.
+    """
+    from audit_import.unt.parser import UnsupportedDocument, parse_audit_pdf
+    from session.store import academic_sessions
+
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(
+            status_code=415,
+            detail="Fork can read UNT degree audits saved as PDF. This file "
+                   "doesn't look like a PDF.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="That file was empty.")
+    if len(contents) > MAX_AUDIT_BYTES:
+        raise HTTPException(
+            status_code=413, detail="That file is larger than the 5 MB limit."
+        )
+
+    try:
+        record = parse_audit_pdf(contents)
+    except UnsupportedDocument as e:
+        # A real technical failure: the document couldn't be processed. Distinct
+        # from a document that parsed fine but left Fork unable to confirm
+        # something, which is not an error and never arrives here.
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        del contents
+
+    session = academic_sessions.create()
+    session.attach_record(record)
+    return _session_payload(session)
+
+
+@app.get("/audit/session/{session_id}")
+def get_academic_session(session_id: str):
+    return _session_payload(_session_or_404(session_id))
+
+
+@app.post("/audit/session/{session_id}/correct")
+def correct_academic_record(session_id: str, correction: CorrectionBody):
+    """Apply a student's edit to the extracted record.
+
+    Any edit returns the record to awaiting-review: confirmation covers a
+    specific set of values, so changing one afterwards would leave the session
+    claiming agreement to something never shown.
+    """
+    from session.context import CorrectionRequest
+
+    session = _session_or_404(session_id)
+    outcome = session.apply_correction(CorrectionRequest(**correction.model_dump()))
+
+    if not outcome.applied:
+        raise HTTPException(status_code=400, detail=outcome.message or "Couldn't apply that change.")
+
+    return {"correction": outcome.model_dump(), **_session_payload(session)}
+
+
+@app.post("/audit/session/{session_id}/confirm")
+def confirm_academic_record(session_id: str):
+    """Accept the extracted record as the session's academic source.
+
+    Confirmation means the student agrees Fork read their document correctly.
+    It is not verification: nothing here has been checked with UNT, and no
+    response may describe it that way.
+    """
+    session = _session_or_404(session_id)
+
+    try:
+        session.confirm()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return _session_payload(session)
+
+
+@app.post("/audit/session/{session_id}/mode")
+def set_academic_mode(session_id: str, mode: str):
+    """Switch between manual entry and the confirmed uploaded record.
+
+    Switching to manual clears the uploaded record, so the two can never supply
+    competing values for the same figure.
+    """
+    from academic_record.enums import AcademicInputMode
+
+    session = _session_or_404(session_id)
+
+    if mode == AcademicInputMode.MANUAL.value:
+        session.switch_to_manual()
+    elif mode == AcademicInputMode.CONFIRMED_UPLOAD.value:
+        if not session.has_confirmed_record:
+            raise HTTPException(
+                status_code=400,
+                detail="Review and confirm the uploaded record before using it.",
+            )
+        session.mode = AcademicInputMode.CONFIRMED_UPLOAD
+        session.touch()
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown mode '{mode}'.")
+
+    return _session_payload(session)
 
 @app.get("/health")
 def health():
