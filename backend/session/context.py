@@ -393,26 +393,33 @@ class SessionAcademicContext(BaseModel):
         self.manual_transferable_by_major[major] = value
         self.touch()
 
-    def acknowledge(self, evidence: str) -> bool:
+    def acknowledge(self, evidence: str, majors: dict) -> bool:
         """Record that the student accepted a specific set of documents.
 
         The caller passes the fingerprint it displayed. A stale client
         acknowledging a screen that has since changed is refused rather than
         granted, which is the difference between consent and a leftover flag.
         """
-        expected = self.current_evidence_fingerprint()
+        expected = self.current_evidence_fingerprint(majors)
         if expected is None or evidence != expected:
             return False
         self.acknowledged_evidence = expected
         self.touch()
         return True
 
-    @property
-    def is_acknowledged(self) -> bool:
-        expected = self.current_evidence_fingerprint()
+    def is_acknowledged(self, majors: dict) -> bool:
+        expected = self.current_evidence_fingerprint(majors)
         return expected is not None and self.acknowledged_evidence == expected
 
-    def current_evidence_fingerprint(self) -> str | None:
+    def current_evidence_fingerprint(self, majors: dict) -> str | None:
+        """Reference data is passed in, never held.
+
+        An earlier draft cached the majors table on the session as a class
+        attribute -- which would have been shared across every session in the
+        process, so one institution's data could leak into another's
+        resolution. Sessions hold student state; reference data belongs to
+        the request that loaded it.
+        """
         from documents.resolution import (
             classify_document,
             detect_discrepancies,
@@ -429,7 +436,7 @@ class SessionAcademicContext(BaseModel):
             return None
 
         classification = (
-            classify_document(what_if, self._majors) if what_if is not None else None
+            classify_document(what_if, majors) if what_if is not None else None
         )
         return evidence_fingerprint(
             current,
@@ -439,10 +446,6 @@ class SessionAcademicContext(BaseModel):
             classification,
             detect_discrepancies(current, what_if),
         )
-
-    #: Populated by the route from institution reference data. Held rather
-    #: than imported so the session stays free of data-loading concerns.
-    _majors: dict = {}
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)
