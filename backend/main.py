@@ -5,7 +5,7 @@ Run with: uvicorn main:app --reload
 Swagger docs appear automatically at http://localhost:8000/docs — FastAPI
 generates them from the models below, no extra work needed.
 """
-
+import os
 import uuid
 
 from dotenv import load_dotenv
@@ -50,9 +50,27 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Browsers enforce this, so it decides which sites may call the API using a
+# visitor's credentials. A wildcard on a public deployment lets any page on
+# the internet drive this backend from someone else's browser -- and every
+# request here costs an Anthropic call, so the bill and the rate limit are
+# both ours.
+#
+# Origins come from the environment rather than the source so the deployed
+# frontend's URL isn't baked into a public repository, and so this file
+# doesn't need editing to add one. Comma-separated; defaults to local
+# development, which is what running with no configuration should mean.
+_DEFAULT_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+
+_allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get("FORK_ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # FIXME restrict this before deploying anywhere public
+    allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
