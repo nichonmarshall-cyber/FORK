@@ -2,6 +2,7 @@
 
 import { forwardRef, useId, useMemo, useRef, useState } from "react";
 import AuditPanel from "@/components/AuditPanel";
+import WhatIfPanel from "@/components/WhatIfPanel";
 import DecisionMap from "@/components/DecisionMap";
 import DecisionChat from "@/components/chat/DecisionChat";
 import PathNavigator from "@/components/PathNavigator";
@@ -78,6 +79,17 @@ export default function Home() {
   // explicitly rather than the frontend inferring it from an absent field,
   // and it ships the sentence to show -- so when a matcher exists and the
   // entry disappears, this field stops explaining itself automatically.
+  // A confirmed What-If for THIS option's major. Attachment is a property of
+  // the document, not of what's currently selected -- switching options must
+  // not detach it or restore that option's manual value.
+  const documents = auditSession?.documents ?? null;
+  const optionCredits = documents?.resolved.option_credits ?? null;
+  const whatIfAppliesHere =
+    optionCredits !== null && optionCredits.program_key === prospectiveMajor;
+
+  const labelForMajor = (key: string) =>
+    MAJORS.find((m) => m.key === key)?.label ?? key;
+
   const transferableUnavailable =
     auditInputs?.unavailable.find((u) => u.field === "credits_transferable") ?? null;
 
@@ -90,6 +102,56 @@ export default function Home() {
     setCompletedRaw(String(inputs.credits_completed));
     // credits_transferable is deliberately left alone: the audit doesn't
     // establish it, so whatever the student entered stands.
+  }
+
+  // Applied by an explicit user action rather than an effect watching the
+  // session. An effect would rewrite the field on every payload -- including
+  // ones the student triggered for another reason -- and silently overwrite
+  // an edit they had just made.
+  function applyWhatIfToForm(next: AuditSession) {
+    const credits = next.documents?.resolved.option_credits;
+    if (!credits || credits.program_key !== prospectiveMajor) return;
+
+    setManualBackup((backup) =>
+      // Only the FIRST time a document takes over, so a second What-If
+      // doesn't overwrite the student's own figure with a document-derived
+      // one and call it manual.
+      backup ?? { completed: completedRaw, transferable: transferableRaw },
+    );
+    setTransferableRaw(String(credits.credits_transferable));
+  }
+
+  function handleWhatIfSession(next: AuditSession | null) {
+    setAuditSession(next);
+    if (next) applyWhatIfToForm(next);
+  }
+
+  /** Switching the prospective major re-resolves which document applies.
+   *
+   * Applying only at confirm time made this one-shot: a student who
+   * confirmed a Psychology What-If while considering IT, then switched to
+   * Psychology, kept their manual estimate forever, because nothing ran
+   * again. The document was attached and correct -- it just never reached
+   * the form.
+   *
+   * Attachment itself is unaffected. A document stays bound to its own
+   * program; this only decides which value the field shows.
+   */
+  function handleProspectiveMajorChange(next: string) {
+    setProspectiveMajor(next);
+
+    const credits = auditSession?.documents?.resolved.option_credits ?? null;
+    if (credits && credits.program_key === next) {
+      setManualBackup(
+        (backup) => backup ?? { completed: completedRaw, transferable: transferableRaw },
+      );
+      setTransferableRaw(String(credits.credits_transferable));
+      return;
+    }
+
+    // Moving to an option no document covers: give the student their own
+    // figure back rather than leaving another program's number in the field.
+    if (manualBackup) setTransferableRaw(manualBackup.transferable);
   }
 
   function handleAuditReverted() {
@@ -408,7 +470,7 @@ export default function Home() {
                 <Select
                   label="Considering"
                   value={prospectiveMajor}
-                  onChange={setProspectiveMajor}
+                  onChange={handleProspectiveMajorChange}
                 />
               )}
               <NumberField
@@ -440,12 +502,21 @@ export default function Home() {
                   onChange={setTransferableRaw}
                   onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
                   hint={
-                    transferableUnavailable
-                      ? transferableUnavailable.user_message
-                      : "Counting toward the new degree, electives included."
+                    whatIfAppliesHere
+                      ? `From your confirmed What-If audit for ${labelForMajor(
+                          prospectiveMajor,
+                        )}.`
+                      : transferableUnavailable
+                        ? transferableUnavailable.user_message
+                        : "Counting toward the new degree, electives included."
                   }
                   error={showTransferableError ? validation.transferable.error : null}
-                  provenance={auditActive ? "student" : null}
+                  // A document figure and a typed estimate must not look the
+                  // same. Once a What-If supplies this option the badge says
+                  // so; otherwise it stays the student's own number.
+                  provenance={
+                    whatIfAppliesHere ? "document" : auditActive ? "student" : null
+                  }
                 />
               )}
 
@@ -498,6 +569,16 @@ export default function Home() {
                   : "Show me the difference"}
             </button>
           </form>
+
+          {auditSession && documents && (
+            <WhatIfPanel
+              session={auditSession}
+              documents={documents}
+              onSession={handleWhatIfSession}
+              optionLabel={labelForMajor}
+              selectedProgramKey={prospectiveMajor}
+            />
+          )}
 
           <AuditPanel
             session={auditSession}
