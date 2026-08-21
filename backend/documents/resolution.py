@@ -198,19 +198,24 @@ def detect_discrepancies(current_record, what_if_record) -> list[Discrepancy]:
     dates_are_far_apart = gap is not None and gap > DOCUMENT_DATE_GAP_DAYS
 
     if dates_are_far_apart:
+        # Bound to a local so the narrowing survives into the f-strings below.
+        # `gap` is Optional by declaration and only non-None inside this
+        # branch, which the reader can see but a type checker cannot infer
+        # through a separately-computed boolean.
+        days = gap or 0
         found.append(
             Discrepancy(
                 code=DiscrepancyCode.DOCUMENT_DATE_GAP,
-                magnitude=f"{gap} days",
+                magnitude=f"{days} days",
                 technical_detail=(
-                    f"prepared_at differs by {gap} days, over the "
+                    f"prepared_at differs by {days} days, over the "
                     f"{DOCUMENT_DATE_GAP_DAYS}-day threshold "
                     f"({current_record.audit_prepared_at} vs "
                     f"{what_if_record.audit_prepared_at})."
                 ),
                 user_message=(
                     "These two documents were prepared about "
-                    f"{gap // 30} months apart "
+                    f"{days // 30} months apart "
                     f"({current_record.audit_prepared_at} and "
                     f"{what_if_record.audit_prepared_at}). The older one may "
                     "not include coursework you've finished since. Check that "

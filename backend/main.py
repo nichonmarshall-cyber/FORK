@@ -884,6 +884,11 @@ def _resolve_documents(session, institution_id: str) -> dict:
         acknowledged=session.is_acknowledged(majors),
     )
 
+    # Named rather than repeating the `or` in both the condition and the
+    # body: evaluating it twice reads as though the two could differ, and
+    # leaves the value Optional at the point it's dereferenced.
+    classification = what_if_classification or pending_classification
+
     return {
         "current_audit": {
             "present": session.uploaded_record is not None,
@@ -893,9 +898,7 @@ def _resolve_documents(session, institution_id: str) -> dict:
             "present": stored is not None,
             "confirmed": bool(stored and stored.is_confirmed),
             "classification": (
-                (what_if_classification or pending_classification).model_dump(mode="json")
-                if (what_if_classification or pending_classification)
-                else None
+                classification.model_dump(mode="json") if classification else None
             ),
         },
         # Typed, unimplemented, and said so plainly rather than accepting a
