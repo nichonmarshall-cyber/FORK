@@ -6,6 +6,8 @@ Swagger docs appear automatically at http://localhost:8000/docs — FastAPI
 generates them from the models below, no extra work needed.
 """
 
+import uuid
+
 from dotenv import load_dotenv
 load_dotenv()  # load .env so the API key is set before anything below
                # tries to use it
@@ -785,6 +787,11 @@ async def parse_degree_audit(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 
+class AcknowledgeBody(BaseModel):
+    evidence_fingerprint: str
+    institution_id: str = _DEFAULT_INSTITUTION_ID
+
+
 class CorrectionBatchBody(BaseModel):
     corrections: list["CorrectionBody"]
 
@@ -808,7 +815,7 @@ def _session_or_404(session_id: str):
         )
 
 
-def _session_payload(session) -> dict:
+def _session_payload(session, institution_id: str = _DEFAULT_INSTITUTION_ID) -> dict:
     from audit_import.unt.review import build_review
     # active_mode and uploaded_source are deliberately separate. A parsed
     # record awaiting review exists while manual is still active, and a client
@@ -831,11 +838,87 @@ def _session_payload(session) -> dict:
     if engine_inputs is not None:
         payload["change_major_inputs"] = engine_inputs.model_dump(mode="json")
 
+    # Document classification and resolution. The logic lives in
+    # documents.resolution as pure functions; this only serialises what they
+    # return. Nothing here decides anything -- see that module's docstring.
+    payload["documents"] = _resolve_documents(session, institution_id)
+
     return payload
 
 
+def _resolve_documents(session, institution_id: str) -> dict:
+    """What the confirmed collection establishes, ready for the form.
+
+    Returns values for the frontend to APPLY to the form -- it does not, and
+    must not, assign comparison inputs. The audit session and the
+    conversation session are separate stores with no link between them; the
+    student applies these figures, presses Calculate, and that calculation is
+    what Ask Fork grounds on. See the Stage 2 notes in
+    documents/resolution.py.
+    """
+    from documents.resolution import classify_document, resolve_comparison_inputs
+
+    try:
+        majors = _load_reference_data(institution_id)["majors"]
+    except UnknownInstitution:
+        majors = {}
+
+    current = session.uploaded_record if session.has_confirmed_record else None
+    stored = session.what_if_document
+    what_if = stored.record if stored and stored.is_confirmed else None
+
+    what_if_classification = (
+        classify_document(what_if, majors) if what_if is not None else None
+    )
+    pending_classification = (
+        classify_document(stored.record, majors)
+        if stored is not None and what_if is None
+        else None
+    )
+
+    resolved = resolve_comparison_inputs(
+        current,
+        what_if,
+        what_if_classification,
+        session.manual_transferable_by_major,
+        acknowledged=session.is_acknowledged(majors),
+    )
+
+    return {
+        "current_audit": {
+            "present": session.uploaded_record is not None,
+            "confirmed": session.has_confirmed_record,
+        },
+        "what_if": {
+            "present": stored is not None,
+            "confirmed": bool(stored and stored.is_confirmed),
+            "classification": (
+                (what_if_classification or pending_classification).model_dump(mode="json")
+                if (what_if_classification or pending_classification)
+                else None
+            ),
+        },
+        # Typed, unimplemented, and said so plainly rather than accepting a
+        # file and doing nothing with it.
+        "transcript": {
+            "present": False,
+            "supported": False,
+            "message": (
+                "Fork can't read transcripts yet. Degree audits are the "
+                "supported document for now."
+            ),
+        },
+        "resolved": resolved.model_dump(mode="json"),
+        "evidence_fingerprint": session.current_evidence_fingerprint(majors),
+    }
+
+
 @app.post("/audit/unt/upload")
-async def upload_unt_audit(file: UploadFile = File(...)):
+async def upload_unt_audit(
+    file: UploadFile = File(...),
+    session_id: str | None = None,
+    institution_id: str = _DEFAULT_INSTITUTION_ID,
+):
     """Parse a UNT degree audit and open a session holding the result.
 
     The record starts unconfirmed and the session starts in manual mode. A
@@ -874,9 +957,25 @@ async def upload_unt_audit(file: UploadFile = File(...)):
     finally:
         del contents
 
-    session = academic_sessions.create()
-    session.attach_record(record)
-    return _session_payload(session)
+    # The parser already tells us which kind this is, from UNT's own
+    # not-finalized banner. Routing on that rather than asking the student
+    # to categorise their own upload.
+    from session.context import StoredDocument
+
+    if record.is_what_if:
+        session = (
+            academic_sessions.get(session_id)
+            if session_id
+            else academic_sessions.create()
+        )
+        session.attach_what_if(
+            StoredDocument(document_id=uuid.uuid4().hex, record=record)
+        )
+    else:
+        session = academic_sessions.create()
+        session.attach_record(record)
+
+    return _session_payload(session, institution_id)
 
 
 @app.get("/audit/session/{session_id}")
@@ -932,7 +1031,11 @@ def correct_academic_record_batch(session_id: str, body: CorrectionBatchBody):
 
 
 @app.post("/audit/session/{session_id}/confirm")
-def confirm_academic_record(session_id: str):
+def confirm_academic_record(
+    session_id: str,
+    document: str = "current",
+    institution_id: str = _DEFAULT_INSTITUTION_ID,
+):
     """Accept the extracted record as the session's academic source.
 
     Confirmation means the student agrees Fork read their document correctly.
@@ -941,12 +1044,67 @@ def confirm_academic_record(session_id: str):
     """
     session = _session_or_404(session_id)
 
-    try:
-        session.confirm()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    from academic_record.enums import ConfirmationStatus
 
-    return _session_payload(session)
+    if document == "what_if":
+        stored = session.what_if_document
+        if stored is None:
+            raise HTTPException(
+                status_code=400, detail="There is no What-If audit to confirm."
+            )
+        stored.confirmation_status = ConfirmationStatus.CONFIRMED
+        for course in stored.record.courses:
+            course.provenance.confirmed_by_student = True
+        # Confirming a document is not acknowledging a disagreement between
+        # documents. Any previous acknowledgement is dropped so the student
+        # sees the comparison as it now stands.
+        session.acknowledged_evidence = None
+        session.touch()
+    else:
+        try:
+            session.confirm()
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    return _session_payload(session, institution_id)
+
+
+@app.post("/audit/session/{session_id}/acknowledge")
+def acknowledge_document_discrepancies(session_id: str, body: AcknowledgeBody):
+    """Accept that two confirmed documents disagree, and proceed anyway.
+
+    A different question from /confirm, which asks whether Fork read ONE
+    document correctly. This asks whether the student accepts how several
+    confirmed documents sit together. Neither substitutes for the other:
+    discrepancies can't even be computed until both documents are confirmed,
+    so confirming the second one must not silently acknowledge a conflict
+    nobody has seen.
+
+    The client sends back the fingerprint it displayed. If the documents have
+    changed since -- a correction, a replacement, a revert -- the fingerprint
+    won't match and the acknowledgement is refused rather than granted. That
+    is the difference between consent and a leftover flag.
+    """
+    session = _session_or_404(session_id)
+
+    try:
+        majors = _load_reference_data(body.institution_id)["majors"]
+    except UnknownInstitution as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if not session.acknowledge(body.evidence_fingerprint, majors):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "evidence_changed",
+                "message": (
+                    "Your documents changed since you last looked at them. "
+                    "Please review the differences again before continuing."
+                ),
+            },
+        )
+
+    return _session_payload(session, body.institution_id)
 
 
 @app.post("/audit/session/{session_id}/mode")
