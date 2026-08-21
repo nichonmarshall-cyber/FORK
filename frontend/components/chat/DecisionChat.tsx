@@ -4,9 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { NODES_BY_ID } from "@/lib/nodes";
 import {
   ApiError,
+  AppliedOptionChange,
   AvailableNode,
   CalcResult,
+  ComparisonState,
   ExplainRequest,
+  ExplainResponse,
+  MultiComparisonResponse,
+  NavigationTarget,
+  askComparison,
   explainDecision,
 } from "@/lib/types";
 import {
@@ -31,6 +37,26 @@ const SUGGESTED_QUESTIONS = [
 const FAILURE_MESSAGE =
   "Fork could not generate an explanation right now. Your decision results are still available.";
 
+// Distinct from FAILURE_MESSAGE on purpose: this is the intent-classifier
+// provider failing outright (Ask Fork never understood the message at
+// all), not the explanation step failing after a successfully resolved
+// intent (which degrades to a deterministic grounded summary instead of
+// erroring -- see ForkResponseCard's used_fallback note).
+const UNAVAILABLE_MESSAGE =
+  "Ask Fork is temporarily unavailable. Your calculated comparison has not been affected. Please try again in a moment.";
+
+const EMPTY_ANSWER_BASE = {
+  key_points: [],
+  limitations: [],
+  still_useful_for: [],
+  next_step: null,
+  related_node_ids: [],
+  navigation_pills: [],
+  navigation_target: null,
+  topic_scope: null,
+  used_fallback: false,
+} satisfies Omit<ExplainResponse, "direct_answer">;
+
 function availableNodesList(): AvailableNode[] {
   return Array.from(NODES_BY_ID.values()).map((n) => ({ id: n.id, label: n.label }));
 }
@@ -46,6 +72,12 @@ export default function DecisionChat({
   calcInputs,
   selectedNode,
   onSelectNode,
+  comparisonSessionId,
+  onComparisonState,
+  selectedDetailPath,
+  onSelectDetailPath,
+  onComparisonSnapshot,
+  onApplyPairwiseOptionChange,
 }: {
   result: CalcResult | null;
   /**
@@ -57,15 +89,59 @@ export default function DecisionChat({
   calcInputs: DecisionInputs | null;
   selectedNode: SelectedNodeInfo | null;
   onSelectNode: (id: string) => void;
+  /**
+   * Set only in Compare Multiple mode. When present, questions go to the
+   * session endpoint instead of /explain, so Fork reasons across every
+   * active option rather than the one path the map happens to show.
+   *
+   * Deliberately just the id: which majors are active lives in the
+   * backend session, and a second copy here would go stale the moment a
+   * student typed "just compare CS and IT".
+   */
+  comparisonSessionId?: string | null;
+  /** Backend state changes on some turns (an option-set instruction, a
+   * topic switch, a stated priority), so the page needs it back to update
+   * the header. */
+  onComparisonState?: (state: ComparisonState) => void;
+  /** Multi mode only: which alternative's map is currently displayed --
+   * sent as a per-request hint (never persisted server-side) so Ask Fork
+   * can resolve "this one" and decide whether an explicit auto-focus
+   * should also switch paths. */
+  selectedDetailPath?: string | null;
+  /** Multi mode only: switches which alternative's map is displayed.
+   * Called only from an explicit navigation_target/pill that names a
+   * major -- never from a topic change or option change. */
+  onSelectDetailPath?: (major: string) => void;
+  /** Multi mode only: syncs the canonical comparison snapshot after a
+   * chat-driven option change (e.g. a genuinely new option added) so the
+   * Decision Map and PathNavigator reflect it immediately, without
+   * requiring a manual recalculation. */
+  onComparisonSnapshot?: (comparison: MultiComparisonResponse["comparison"]) => void;
+  /** Compare One only: applies a chat-resolved "replace" instruction --
+   * updates the draft prospective major/credits and, once a transfer
+   * figure is known, triggers the same recompute a manual form
+   * submission would go through. */
+  onApplyPairwiseOptionChange?: (change: AppliedOptionChange) => void;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // Compare One has no session established until its first chat turn --
+  // unlike Multi mode, where the session already exists from
+  // /comparison/start. Resets naturally on remount (mode switch), same
+  // as everything else in this component.
+  const [pairwiseSessionId, setPairwiseSessionId] = useState<string | null>(null);
 
   // Both must be present: a question needs a result to be about AND the
   // snapshot of inputs that produced it. They're set together, so this is
   // belt-and-braces, but it makes the non-null assertion in ask() honest.
-  const disabled = result === null || calcInputs === null;
+  // In multi-option mode there is no pairwise calcInputs — the backend
+  // session holds the trusted inputs instead, so a live session is what
+  // makes the chat usable. Requiring calcInputs there would leave the
+  // composer permanently disabled.
+  const disabled = comparisonSessionId
+    ? result === null
+    : result === null || calcInputs === null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const fingerprintRef = useRef<string | null>(null);
 
@@ -105,12 +181,50 @@ export default function DecisionChat({
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, busy]);
 
+  /** Applies a backend-computed navigation_target -- purely mechanical,
+   * never a judgment call the frontend makes itself. See
+   * conversation/orchestrator.py's _compute_navigation for how this is
+   * decided server-side. */
+  function applyNavigationTarget(target: NavigationTarget | null) {
+    if (!target) return;
+    onSelectNode(target.node_id);
+    if (target.major && onSelectDetailPath) {
+      onSelectDetailPath(target.major);
+    }
+  }
+
+  function pushClarification(message: string) {
+    setTurns((prev) => [
+      ...prev,
+      {
+        kind: "fork",
+        id: nextTurnId("fork"),
+        answer: { direct_answer: message, ...EMPTY_ANSWER_BASE },
+      },
+    ]);
+  }
+
+  function pushUnavailable(question: string) {
+    setTurns((prev) => [
+      ...prev,
+      {
+        kind: "error",
+        id: nextTurnId("error"),
+        failedQuestion: question,
+        message: UNAVAILABLE_MESSAGE,
+      },
+    ]);
+  }
+
   async function ask(text: string) {
     const trimmed = text.trim();
     // `busy` is the real duplicate-submit gate — the disabled attributes
     // on the buttons are the visible signal, this is what actually
     // prevents a second in-flight request.
-    if (!trimmed || disabled || busy || calcInputs === null) return;
+    if (!trimmed || disabled || busy) return;
+    // Only the pairwise path needs calcInputs; the session path sends
+    // nothing but the session id.
+    if (!comparisonSessionId && calcInputs === null) return;
 
     setBusy(true);
     setDraft("");
@@ -123,6 +237,48 @@ export default function DecisionChat({
     ]);
 
     try {
+      // Multi-option mode: one call, and the backend already knows which
+      // majors are active. Nothing about the currently displayed path is
+      // sent as anything but a hint, which is what keeps opening a map
+      // from narrowing the conversation.
+      if (comparisonSessionId) {
+        const response = await askComparison(comparisonSessionId, trimmed, {
+          selectedDetailPath,
+          availableNodes: availableNodesList(),
+        });
+        onComparisonState?.(response.state);
+
+        if (response.status === "ai_unavailable") {
+          pushUnavailable(trimmed);
+          return;
+        }
+        if (response.status === "clarification_required") {
+          pushClarification(response.message);
+          return;
+        }
+
+        if (response.comparison) onComparisonSnapshot?.(response.comparison);
+        applyNavigationTarget(response.navigation_target);
+        setTurns((prev) => [
+          ...prev,
+          {
+            kind: "fork",
+            id: nextTurnId("fork"),
+            answer: {
+              ...response.answer,
+              navigation_pills: response.navigation_pills,
+              navigation_target: response.navigation_target,
+              topic_scope: response.topic_scope,
+              used_fallback: response.used_fallback,
+            },
+          },
+        ]);
+        return;
+      }
+
+      // Narrowed by the early return above, but TypeScript loses that
+      // across the multi-option branch, so it's restated here.
+      if (calcInputs === null) return;
       const req: ExplainRequest = {
         ...calcInputs,
         question: trimmed,
@@ -130,21 +286,43 @@ export default function DecisionChat({
         selected_node_label: selectedNode?.label,
         selected_node_question: selectedNode?.question,
         available_nodes: availableNodesList(),
+        session_id: pairwiseSessionId ?? undefined,
         // Deliberately absent: any prior Fork answer. Conversation
         // history is UI state only — the trusted facts for this request
         // come from the server recomputing the calculation from
         // calcInputs, never from text a model produced earlier.
       };
-      const answer = await explainDecision(req);
+      const response = await explainDecision(req);
+      if (response.state.session_id) setPairwiseSessionId(response.state.session_id);
+
+      if (response.status === "ai_unavailable") {
+        pushUnavailable(trimmed);
+        return;
+      }
+      if (response.status === "clarification_required") {
+        pushClarification(response.message);
+        return;
+      }
+      if (response.status === "option_change_applied") {
+        onApplyPairwiseOptionChange?.(response.applied_option_change);
+        pushClarification(
+          response.applied_option_change.credits_transferable !== null
+            ? "Got it — updating your comparison with that now."
+            : "Got it — updating what you're comparing against.",
+        );
+        return;
+      }
+
+      applyNavigationTarget(response.navigation_target);
       setTurns((prev) => [
         ...prev,
-        { kind: "fork", id: nextTurnId("fork"), answer },
+        { kind: "fork", id: nextTurnId("fork"), answer: response },
       ]);
     } catch (e) {
       if (e instanceof ApiError) {
-        console.error("Fork: /explain failed:", e.message);
+        console.error("Fork: chat request failed:", e.message);
       } else {
-        console.error("Fork: /explain failed with an unexpected error:", e);
+        console.error("Fork: chat request failed with an unexpected error:", e);
       }
       setTurns((prev) => [
         ...prev,
@@ -203,6 +381,7 @@ export default function DecisionChat({
               key={turn.id}
               turn={turn}
               onSelectNode={onSelectNode}
+              onSelectDetailPath={onSelectDetailPath}
               onRetry={retry}
             />
           ))
@@ -248,10 +427,12 @@ export default function DecisionChat({
 function TurnView({
   turn,
   onSelectNode,
+  onSelectDetailPath,
   onRetry,
 }: {
   turn: Turn;
   onSelectNode: (id: string) => void;
+  onSelectDetailPath?: (major: string) => void;
   onRetry: (question: string) => void;
 }) {
   if (turn.kind === "user") {
@@ -265,7 +446,13 @@ function TurnView({
   }
 
   if (turn.kind === "fork") {
-    return <ForkResponseCard answer={turn.answer} onSelectNode={onSelectNode} />;
+    return (
+      <ForkResponseCard
+        answer={turn.answer}
+        onSelectNode={onSelectNode}
+        onSelectDetailPath={onSelectDetailPath}
+      />
+    );
   }
 
   if (turn.kind === "error") {
@@ -276,7 +463,7 @@ function TurnView({
           role="alert"
           className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-2xl rounded-tl-sm border border-rose-500/25 bg-rose-500/[0.07] px-3 py-2 text-[12px] leading-relaxed text-rose-300"
         >
-          <span>{FAILURE_MESSAGE}</span>
+          <span>{turn.message ?? FAILURE_MESSAGE}</span>
           <button
             type="button"
             onClick={() => onRetry(turn.failedQuestion)}

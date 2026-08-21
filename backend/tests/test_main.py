@@ -169,14 +169,51 @@ _GOOD_EXPLAIN_JSON = json.dumps(
     }
 )
 
+_GOOD_INTENT_JSON = json.dumps(
+    {
+        "topic_scope": "broad",
+        "option_change": "none",
+        "referenced_majors": [],
+        "add_options": [],
+        "remove_options": [],
+        "priority_update": None,
+        "needs_clarification": False,
+        "clarification_type": None,
+        "ambiguous_candidates": [],
+    }
+)
+
+# /explain now calls the model TWICE per request: once to classify intent
+# (ai.interface.classify_intent), once to write the explanation
+# (explain_decision). A single canned _call_model return_value can no
+# longer serve both -- this dispatches on which system prompt is asking,
+# so each stage's tests can control just the response they're about.
+_INTENT_SYSTEM_MARKER = "You interpret one message from a student"
+
+
+def _dispatch(explain_response):
+    def _side_effect(system, user_message, max_tokens=1024, model=None):
+        if _INTENT_SYSTEM_MARKER in system:
+            return _GOOD_INTENT_JSON
+        if isinstance(explain_response, Exception):
+            raise explain_response
+        return explain_response
+
+    return _side_effect
+
+
+def _fail_everything(*args, **kwargs):
+    raise RuntimeError("connection reset")
+
 
 def test_explain_returns_a_structured_grounded_answer():
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = _GOOD_EXPLAIN_JSON
+        mock_call.side_effect = _dispatch(_GOOD_EXPLAIN_JSON)
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     assert res.status_code == 200
     data = res.json()
-    assert set(data.keys()) == {
+    assert data["status"] == "complete"
+    assert {
         "direct_answer",
         "key_points",
         "limitations",
@@ -184,10 +221,15 @@ def test_explain_returns_a_structured_grounded_answer():
         "next_step",
         "related_node_ids",
         "used_fallback",
-    }
+        "navigation_pills",
+        "navigation_target",
+        "topic_scope",
+        "state",
+    } <= set(data.keys())
     assert data["used_fallback"] is False
     assert len(data["direct_answer"]) > 0
     assert data["key_points"][0]["title"] == "Additional cost"
+    assert data["topic_scope"] == "broad"
 
 
 def test_explain_omits_empty_sections_rather_than_padding_them():
@@ -195,7 +237,7 @@ def test_explain_omits_empty_sections_rather_than_padding_them():
     (nothing relevant to this question) must come through as empty, not
     invented content to fill the section."""
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = _GOOD_EXPLAIN_JSON
+        mock_call.side_effect = _dispatch(_GOOD_EXPLAIN_JSON)
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     data = res.json()
     assert data["limitations"] == []
@@ -211,10 +253,14 @@ def test_explain_passes_selected_node_and_available_nodes_to_the_model():
         "available_nodes": _AVAILABLE_NODES,
     }
     with patch("ai.interface._call_model") as mock_call:
-        mock_call.return_value = _GOOD_EXPLAIN_JSON
+        mock_call.side_effect = _dispatch(_GOOD_EXPLAIN_JSON)
         res = client.post("/decision-paths/change-major/explain", json=body)
     assert res.status_code == 200
-    system_arg = mock_call.call_args[0][0]
+    # The explanation call specifically (the second one) is what should
+    # carry the node context -- the intent-classification call has no
+    # reason to mention it.
+    explain_calls = [c for c in mock_call.call_args_list if _INTENT_SYSTEM_MARKER not in c.args[0]]
+    system_arg = explain_calls[0].args[0]
     assert "Financial Impact" in system_arg
     assert "salary_outlook" in system_arg  # the full valid-id list reaches the prompt
 
@@ -231,19 +277,39 @@ def test_explain_filters_a_related_node_id_the_model_invented():
             "related_node_ids": ["salary_outlook", "totally_made_up"],
         }
     )
-    with patch("ai.interface._call_model", return_value=invented):
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.side_effect = _dispatch(invented)
         res = client.post("/decision-paths/change-major/explain", json=body)
     assert res.json()["related_node_ids"] == ["salary_outlook"]
 
 
-def test_explain_falls_back_gracefully_when_the_provider_fails():
-    """A provider exception must never reach the client as a raw error —
-    explain_decision's internal fallback should produce a normal 200
-    response instead."""
-    with patch("ai.interface._call_model", side_effect=RuntimeError("connection reset")):
+def test_explain_reports_ai_unavailable_when_the_provider_is_down_for_intent_classification():
+    """When the provider fails outright, intent classification itself
+    never succeeds -- this must surface as ai_unavailable, not a
+    deterministic-fallback explanation. Never guess an intent, never fall
+    back to keyword matching (there is none), never attempt to explain
+    without first understanding what was asked."""
+    with patch("ai.interface._call_model", side_effect=_fail_everything):
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     assert res.status_code == 200
     data = res.json()
+    assert data["status"] == "ai_unavailable"
+    assert "temporarily unavailable" in data["message"]
+    assert "RuntimeError" not in res.text
+    assert "connection reset" not in res.text
+    assert "Traceback" not in res.text
+
+
+def test_explain_falls_back_gracefully_when_only_explanation_fails():
+    """Intent classification succeeds (Fork knows what was asked), but the
+    explanation call itself fails -- this is the case where the
+    deterministic, always-grounded fallback template should still run."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.side_effect = _dispatch(RuntimeError("connection reset"))
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "complete"
     assert data["used_fallback"] is True
     assert len(data["direct_answer"]) > 0
     assert "RuntimeError" not in res.text
@@ -251,11 +317,14 @@ def test_explain_falls_back_gracefully_when_the_provider_fails():
     assert "Traceback" not in res.text
 
 
-def test_explain_falls_back_on_invalid_json_from_the_model():
-    with patch("ai.interface._call_model", return_value="Not JSON at all."):
+def test_explain_falls_back_on_invalid_json_from_the_explanation_model():
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.side_effect = _dispatch("Not JSON at all.")
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     assert res.status_code == 200
-    assert res.json()["used_fallback"] is True
+    data = res.json()
+    assert data["status"] == "complete"
+    assert data["used_fallback"] is True
 
 
 def test_explain_rejects_invalid_inputs_the_same_way_calculate_does():

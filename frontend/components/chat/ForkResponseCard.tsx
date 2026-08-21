@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { NODES_BY_ID } from "@/lib/nodes";
-import { ExplainResponse } from "@/lib/types";
+import { majorLabel } from "@/lib/majors";
+import { ExplainResponse, NavigationPill } from "@/lib/types";
 
 /**
  * One Fork answer, rendered as a left-aligned response card.
@@ -24,9 +25,14 @@ import { ExplainResponse } from "@/lib/types";
 export default function ForkResponseCard({
   answer,
   onSelectNode,
+  onSelectDetailPath,
 }: {
   answer: ExplainResponse;
   onSelectNode: (id: string) => void;
+  /** Multi mode only — lets a path-aware pill switch which alternative's
+   * map is displayed. Absent in Compare One, where there's only ever one
+   * path and pills never carry a major. */
+  onSelectDetailPath?: (major: string) => void;
 }) {
   return (
     <div className="flex gap-2.5">
@@ -79,14 +85,17 @@ export default function ForkResponseCard({
 
         {answer.used_fallback && (
           <p className="text-[11px] text-slate-600">
-            Simplified summary — built directly from the calculation.
+            Simplified summary — built directly from Fork&apos;s calculated
+            results because the conversational explanation is temporarily
+            unavailable.
           </p>
         )}
 
-        {answer.related_node_ids.length > 0 && (
+        {answer.navigation_pills.length > 0 && (
           <RelatedNodeLinks
-            nodeIds={answer.related_node_ids}
+            pills={answer.navigation_pills}
             onSelectNode={onSelectNode}
+            onSelectDetailPath={onSelectDetailPath}
           />
         )}
       </div>
@@ -130,28 +139,45 @@ function LimitationsDisclosure({
 }
 
 function RelatedNodeLinks({
-  nodeIds,
+  pills,
   onSelectNode,
+  onSelectDetailPath,
 }: {
-  nodeIds: string[];
+  pills: NavigationPill[];
   onSelectNode: (id: string) => void;
+  onSelectDetailPath?: (major: string) => void;
 }) {
+  // Show the "Major · Node" prefix only when the pill set actually
+  // contains more than one distinct major -- repeating the SAME major on
+  // every pill (a question about one alternative's several nodes) is the
+  // redundancy Compare One already avoids by never carrying a major at
+  // all. See conversation/orchestrator.py's _compute_navigation for the
+  // three-case rule that produces these pills server-side.
+  const distinctMajors = new Set(pills.map((p) => p.major).filter(Boolean));
+  const showMajorPrefix = distinctMajors.size > 1;
+
   return (
     <div className="flex flex-wrap gap-1.5 pt-0.5">
-      {nodeIds.map((id) => {
+      {pills.map((pill, i) => {
         // Defensive despite the backend already filtering against real
         // ids — rendering a chip for a node that doesn't exist would
         // produce a dead click, so skip rather than trust.
-        const node = NODES_BY_ID.get(id);
+        const node = NODES_BY_ID.get(pill.node_id);
         if (!node) return null;
+        const label = showMajorPrefix && pill.major
+          ? `${majorLabel(pill.major)} · ${node.label}`
+          : node.label;
         return (
           <button
-            key={id}
+            key={`${pill.major ?? "none"}-${pill.node_id}-${i}`}
             type="button"
-            onClick={() => onSelectNode(id)}
+            onClick={() => {
+              onSelectNode(pill.node_id);
+              if (pill.major) onSelectDetailPath?.(pill.major);
+            }}
             className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-slate-400 transition hover:border-cyan-400/40 hover:text-cyan-300 focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/60"
           >
-            {node.label}
+            {label}
           </button>
         );
       })}

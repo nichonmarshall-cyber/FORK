@@ -1,33 +1,30 @@
 "use client";
 
-import { forwardRef, useId, useRef, useState } from "react";
+import { forwardRef, useId, useMemo, useRef, useState } from "react";
 import AuditPanel from "@/components/AuditPanel";
 import DecisionMap from "@/components/DecisionMap";
 import DecisionChat from "@/components/chat/DecisionChat";
+import PathNavigator from "@/components/PathNavigator";
+import CompareModeToggle, { CompareMode } from "@/components/form/CompareModeToggle";
+import MultiOptionInputs, {
+  DraftOption,
+  MAX_OPTIONS,
+  validateAllOptions,
+} from "@/components/form/MultiOptionInputs";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
 import { NODES_BY_ID, payDelta } from "@/lib/nodes";
-import { ApiError, CalcResult, calculateChangeMajor } from "@/lib/types";
+import { MAJORS } from "@/lib/majors";
+import {
+  ApiError,
+  AppliedOptionChange,
+  CalcResult,
+  MultiComparisonResponse,
+  calculateChangeMajor,
+  startComparison,
+} from "@/lib/types";
 import { validateCreditsPair } from "@/lib/validation";
 import { AuditSession } from "@/lib/audit";
-
-/**
- * Major keys have to match the reference JSON exactly. Listed here rather
- * than fetched because the backend has no endpoint for them yet — worth
- * adding one so this list can't drift out of sync with the data file (it
- * already has once: this list used to include "psychology", "nursing",
- * and "mechanical_engineering", which Stage 3's data work turned into a
- * clarification case, an unsupported case, and a renamed key,
- * respectively — see backend/decision_paths/change_major/major_resolution.py).
- */
-const MAJORS = [
-  { key: "computer_science", label: "Computer Science" },
-  { key: "information_technology", label: "Information Technology" },
-  { key: "business_administration", label: "Business Administration (BBA)" },
-  { key: "psychology_ba", label: "Psychology (B.A.)" },
-  { key: "psychology_bs", label: "Psychology (B.S.)" },
-  { key: "mechanical_energy_engineering", label: "Mechanical & Energy Engineering" },
-];
 
 const money = (n: number) =>
   `${n < 0 ? "−" : ""}$${Math.abs(n).toLocaleString("en-US", {
@@ -103,6 +100,28 @@ export default function Home() {
     }
   }
 
+  // --- Multi-option comparison ---------------------------------------
+  //
+  // Four separate concepts, deliberately not collapsed into fewer:
+  //
+  //   compareMode        which form is showing
+  //   draftOptions       what's typed but not yet submitted
+  //   multiComparison    the last SUCCESSFUL fan-out (trusted)
+  //   selectedDetailPath which alternative's map is on screen
+  //
+  // activeOptions is NOT here. It lives in the backend session and is
+  // mirrored from every response, because a typed instruction like "just
+  // compare CS and IT" changes it server-side and a second client-side
+  // copy would immediately disagree.
+  const [compareMode, setCompareMode] = useState<CompareMode>("one");
+  const [draftOptions, setDraftOptions] = useState<DraftOption[]>([]);
+  const [multiComparison, setMultiComparison] =
+    useState<MultiComparisonResponse | null>(null);
+  const [selectedDetailPath, setSelectedDetailPath] = useState<string | null>(null);
+  const [multiSubmitAttempted, setMultiSubmitAttempted] = useState(false);
+
+  const optionRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
   const completedRef = useRef<HTMLInputElement>(null);
   const transferableRef = useRef<HTMLInputElement>(null);
 
@@ -177,11 +196,187 @@ export default function Home() {
 
   const selectedNode = selectedId ? NODES_BY_ID.get(selectedId) ?? null : null;
 
+  // --- Multi-option derived state ------------------------------------
+
+  const isMulti = compareMode === "multiple";
+
+  /** Only the alternatives the backend still considers active. This is
+   * what "1 of N" counts — the anchor is what they're measured against,
+   * not one of the numbered options. */
+  const activePaths = useMemo(() => {
+    if (!multiComparison) return [];
+    const active = new Set(multiComparison.state.active_options);
+    return multiComparison.comparison.options.filter((o) =>
+      active.has(o.major_key),
+    );
+  }, [multiComparison]);
+
+  /** The alternative currently on the map. Falls back to the first
+   * calculated path when the selected one was removed from the active set
+   * by a conversational instruction. */
+  const effectiveDetailPath = useMemo(() => {
+    if (activePaths.length === 0) return null;
+    const stillActive = activePaths.some(
+      (o) => o.major_key === selectedDetailPath && o.status === "calculated",
+    );
+    if (stillActive) return selectedDetailPath;
+    return (
+      activePaths.find((o) => o.status === "calculated")?.major_key ?? null
+    );
+  }, [activePaths, selectedDetailPath]);
+
+  const detailResult: CalcResult | null = useMemo(() => {
+    if (!isMulti || !effectiveDetailPath) return null;
+    const option = activePaths.find((o) => o.major_key === effectiveDetailPath);
+    return (option?.detail as CalcResult | undefined) ?? null;
+  }, [isMulti, effectiveDetailPath, activePaths]);
+
+  // What the workspace actually renders. In multi mode that's whichever
+  // path the navigator has selected; in single mode it's the pairwise
+  // result. One variable so the map and node panel don't each have to
+  // know which mode is active.
+  const displayedResult = isMulti ? detailResult : result;
+
+  const multiValidation = validateAllOptions(draftOptions, completedRaw);
+
+  function handleModeChange(next: CompareMode) {
+    if (next === compareMode) return;
+    setCompareMode(next);
+    setError(null);
+
+    if (next === "multiple") {
+      // Seed the first row from whatever the pairwise form already has,
+      // so switching modes doesn't throw away what they just typed.
+      const seeded: DraftOption[] = [
+        { major: prospectiveMajor, transferableRaw: transferableRaw },
+      ];
+      const nextFree = MAJORS.find(
+        (m) => m.key !== currentMajor && m.key !== prospectiveMajor,
+      );
+      if (nextFree) seeded.push({ major: nextFree.key, transferableRaw: "" });
+      setDraftOptions(seeded);
+      setMultiSubmitAttempted(false);
+    } else {
+      // Back to a clean pairwise slate. The multi session is abandoned
+      // rather than kept warm — holding a hidden conversation the student
+      // can't see would make "just compare CS and IT" apply to something
+      // invisible.
+      setMultiComparison(null);
+      setSelectedDetailPath(null);
+      setDraftOptions([]);
+    }
+  }
+
+  async function handleMultiSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setMultiSubmitAttempted(true);
+
+    if (validation.completed.error) {
+      completedRef.current?.focus();
+      return;
+    }
+    if (!multiValidation.isValid) {
+      const firstBad = draftOptions.find((o) => multiValidation.errors[o.major]);
+      if (firstBad) optionRefs.current[firstBad.major]?.focus();
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await startComparison({
+        current_major: currentMajor,
+        credits_completed: validation.completed.value as number,
+        options: draftOptions.map((o) => ({
+          major: o.major,
+          credits_transferable: Number(o.transferableRaw),
+        })),
+      });
+      setMultiComparison(response);
+      // Open on the first path that actually has numbers.
+      const firstCalculated = response.comparison.options.find(
+        (o) => o.status === "calculated",
+      );
+      setSelectedDetailPath(firstCalculated?.major_key ?? null);
+      setSelectedId("root");
+      setMultiSubmitAttempted(false);
+    } catch (e) {
+      // Same rule as the pairwise path: a failed request never wipes a
+      // comparison the student already built successfully.
+      setError(e instanceof ApiError ? e.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Applies a chat-resolved Compare One "replace" (see
+   * conversation.orchestrator.handle_pairwise_turn). When a transfer
+   * figure came with it, this recomputes immediately through the exact
+   * same calculate/explain trust path a manual form submission already
+   * uses -- chat never gets a shortcut around validation. When no figure
+   * was given yet, only the draft major updates and the transfer field is
+   * cleared/invalidated so the OLD major's figure can never be reused for
+   * the new one; Ask Fork's own reply already asked for the real number. */
+  async function handlePairwiseOptionChange(change: AppliedOptionChange) {
+    setProspectiveMajor(change.major);
+    if (change.credits_transferable === null) {
+      setTransferableRaw("");
+      return;
+    }
+    setTransferableRaw(String(change.credits_transferable));
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await calculateChangeMajor({
+        current_major: currentMajor,
+        prospective_major: change.major,
+        credits_completed: validation.completed.value as number,
+        credits_transferable: change.credits_transferable,
+      });
+      setResult(data);
+      setCalculatedInputs({
+        current_major: currentMajor,
+        prospective_major: change.major,
+        credits_completed: validation.completed.value as number,
+        credits_transferable: change.credits_transferable,
+      });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Syncs the canonical comparison snapshot after a chat-driven option
+   * change (e.g. a genuinely new option added) so the Decision Map and
+   * PathNavigator reflect it immediately -- /comparison/ask now returns
+   * the full snapshot on every "complete" response for exactly this. */
+  function handleComparisonSnapshot(comparison: MultiComparisonResponse["comparison"]) {
+    setMultiComparison((prev) => (prev ? { ...prev, comparison } : prev));
+  }
+
+  /** A pending path has no result to show, so send the student to the
+   * input that's missing instead of swapping to an empty map. */
+  function handleFocusPending(majorKey: string) {
+    setMultiSubmitAttempted(true);
+    const option = multiComparison?.comparison.options.find(
+      (o) => o.major_key === majorKey,
+    );
+    setError(
+      option
+        ? `${option.major} isn't calculated yet — Fork needs ${(
+            option.missing_fields ?? ["more information"]
+          ).join(", ")}.`
+        : null,
+    );
+    optionRefs.current[majorKey]?.focus();
+  }
+
   return (
     <div className="min-h-screen bg-[#05070d] text-slate-200">
       <div className="mx-auto grid max-w-[1840px] grid-cols-1 gap-4 p-4 xl:grid-cols-[172px_250px_minmax(0,1fr)_300px]">
         <div className="hidden xl:block">
-          <Sidebar result={result} />
+          <Sidebar result={displayedResult} />
         </div>
 
         {/* ---- Scenario ---- */}
@@ -195,10 +390,27 @@ export default function Home() {
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+          <form
+            onSubmit={isMulti ? handleMultiSubmit : handleSubmit}
+            className="space-y-5"
+            noValidate
+          >
             <div className="space-y-4 border-t border-white/[0.07] pt-5">
               <Select label="Current major" value={currentMajor} onChange={setCurrentMajor} />
-              <Select label="Considering" value={prospectiveMajor} onChange={setProspectiveMajor} />
+
+              <CompareModeToggle
+                mode={compareMode}
+                onChange={handleModeChange}
+                disabled={loading}
+              />
+
+              {!isMulti && (
+                <Select
+                  label="Considering"
+                  value={prospectiveMajor}
+                  onChange={setProspectiveMajor}
+                />
+              )}
               <NumberField
                 ref={completedRef}
                 label="Credits completed"
@@ -213,27 +425,42 @@ export default function Home() {
                 error={showCompletedError ? validation.completed.error : null}
                 provenance={auditActive ? "document" : null}
               />
-              <NumberField
-                ref={transferableRef}
-                label={
-                  auditActive
-                    ? `Credits that apply to ${
-                        MAJORS.find((m) => m.key === prospectiveMajor)?.label ??
-                        "the new major"
-                      }`
-                    : "Credits that transfer"
-                }
-                displayValue={validation.transferable.display}
-                onChange={setTransferableRaw}
-                onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
-                hint={
-                  transferableUnavailable
-                    ? transferableUnavailable.user_message
-                    : "Counting toward the new degree, electives included."
-                }
-                error={showTransferableError ? validation.transferable.error : null}
-                provenance={auditActive ? "student" : null}
-              />
+              {!isMulti && (
+                <NumberField
+                  ref={transferableRef}
+                  label={
+                    auditActive
+                      ? `Credits that apply to ${
+                          MAJORS.find((m) => m.key === prospectiveMajor)?.label ??
+                          "the new major"
+                        }`
+                      : "Credits that transfer"
+                  }
+                  displayValue={validation.transferable.display}
+                  onChange={setTransferableRaw}
+                  onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
+                  hint={
+                    transferableUnavailable
+                      ? transferableUnavailable.user_message
+                      : "Counting toward the new degree, electives included."
+                  }
+                  error={showTransferableError ? validation.transferable.error : null}
+                  provenance={auditActive ? "student" : null}
+                />
+              )}
+
+              {isMulti && (
+                <MultiOptionInputs
+                  majors={MAJORS}
+                  currentMajor={currentMajor}
+                  completedRaw={completedRaw}
+                  options={draftOptions}
+                  onChange={setDraftOptions}
+                  showErrors={multiSubmitAttempted}
+                  disabled={loading}
+                  inputRefs={optionRefs}
+                />
+              )}
             </div>
 
             <button
@@ -250,19 +477,25 @@ export default function Home() {
               // disabled during the real network request, where a second
               // click really should do nothing.
               disabled={loading}
-              aria-disabled={!validation.isValid || loading}
+              aria-disabled={
+                (isMulti ? !multiValidation.isValid : !validation.isValid) || loading
+              }
               title={
                 !validation.isValid
                   ? "Fix the highlighted field before calculating"
                   : undefined
               }
               className={`w-full rounded-xl px-4 py-2.5 text-[13.5px] font-semibold text-slate-950 shadow-[0_0_22px_-6px_#22d3ee] transition ${
-                !validation.isValid || loading
+                (isMulti ? !multiValidation.isValid : !validation.isValid) || loading
                   ? "cursor-not-allowed bg-cyan-500/40 opacity-50"
                   : "cursor-pointer bg-cyan-500/90 hover:bg-cyan-400"
               }`}
             >
-              {loading ? "Calculating…" : "Show me the difference"}
+              {loading
+                ? "Calculating…"
+                : isMulti
+                  ? `Compare ${draftOptions.length} options`
+                  : "Show me the difference"}
             </button>
           </form>
 
@@ -279,7 +512,7 @@ export default function Home() {
             </p>
           )}
 
-          {result && (
+          {displayedResult && (
             <div className="space-y-3 border-t border-white/[0.07] pt-5">
               <p className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
                 How this affects you
@@ -287,16 +520,16 @@ export default function Home() {
               <Affect
                 label="Time to graduate"
                 value={
-                  result.summary.incremental_semesters === 0
+                  displayedResult.summary.incremental_semesters === 0
                     ? "No change"
-                    : `${result.summary.incremental_semesters > 0 ? "+" : "−"}${Math.abs(result.summary.incremental_semesters)} semesters`
+                    : `${displayedResult.summary.incremental_semesters > 0 ? "+" : "−"}${Math.abs(displayedResult.summary.incremental_semesters)} semesters`
                 }
-                bad={result.summary.incremental_semesters > 0}
+                bad={displayedResult.summary.incremental_semesters > 0}
               />
               <Affect
                 label="Est. additional cost"
-                value={money(result.summary.incremental_total_cost)}
-                bad={result.summary.incremental_total_cost > 0}
+                value={money(displayedResult.summary.incremental_total_cost)}
+                bad={displayedResult.summary.incremental_total_cost > 0}
               />
               {/* Not "starting salary": the figure is a median measured at
                   a stated point after graduation, and calling it a starting
@@ -309,8 +542,8 @@ export default function Home() {
                   a bare $0 that would read as broken data). */}
               <Affect
                 label="Earnings 1 yr after graduation"
-                value={payDelta(result.summary.annual_salary_delta)}
-                bad={(result.summary.annual_salary_delta ?? 0) < 0}
+                value={payDelta(displayedResult.summary.annual_salary_delta)}
+                bad={(displayedResult.summary.annual_salary_delta ?? 0) < 0}
               />
             </div>
           )}
@@ -320,42 +553,69 @@ export default function Home() {
         <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#060911]">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
             <div>
-              <h2 className="text-[15px] font-semibold text-slate-100">
-                Change Major
-              </h2>
-              <p className="text-[12px] text-slate-500">
-                {result
-                  ? `${result.summary.current_major} → ${result.summary.prospective_major}`
-                  : "Set your situation, then explore what each part costs."}
-              </p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-[15px] font-semibold text-slate-100">
+                  Change Major
+                </h2>
+                {/* Only in multi mode — a single comparison shouldn't be
+                    dressed up as "1 of 1". */}
+                {isMulti && activePaths.length > 0 && effectiveDetailPath && (
+                  <PathNavigator
+                    options={activePaths}
+                    selectedMajorKey={effectiveDetailPath}
+                    onSelect={setSelectedDetailPath}
+                    onFocusPending={handleFocusPending}
+                  />
+                )}
+              </div>
+              {/* In multi mode the pairwise "A → B" subtitle is actively
+                  misleading — it makes a four-way comparison look like it
+                  only contains two majors. Show the alternative currently
+                  being inspected instead, with the shared anchor under it. */}
+              {isMulti && displayedResult ? (
+                <div className="leading-tight">
+                  <p className="text-[13px] font-medium text-slate-200">
+                    {displayedResult.summary.prospective_major}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    From {displayedResult.summary.current_major}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[12px] text-slate-500">
+                  {displayedResult
+                    ? `${displayedResult.summary.current_major} → ${displayedResult.summary.prospective_major}`
+                    : "Set your situation, then explore what each part costs."}
+                </p>
+              )}
             </div>
             <Legend />
           </header>
 
           <div className="aspect-[1000/720] w-full">
             <DecisionMap
-              result={result}
+              result={displayedResult}
               selectedId={selectedId}
               onSelect={setSelectedId}
             />
           </div>
 
-          {result && (
+          {displayedResult && (
             <div className="grid grid-cols-1 gap-px border-t border-white/[0.07] bg-white/[0.07] sm:grid-cols-2">
               <PathCard
-                title={`Finish ${result.summary.current_major}`}
-                items={result.comparison.staying.line_items}
+                title={`Finish ${displayedResult.summary.current_major}`}
+                items={displayedResult.comparison.staying.line_items}
               />
               <PathCard
-                title={`Switch to ${result.summary.prospective_major}`}
-                items={result.comparison.switching.line_items}
+                title={`Switch to ${displayedResult.summary.prospective_major}`}
+                items={displayedResult.comparison.switching.line_items}
               />
             </div>
           )}
 
           <div className="border-t border-white/[0.07] p-4">
             <DecisionChat
-              result={result}
+              result={displayedResult}
               calcInputs={calculatedInputs}
               selectedNode={
                 selectedNode
@@ -367,14 +627,32 @@ export default function Home() {
                   : null
               }
               onSelectNode={setSelectedId}
+              comparisonSessionId={
+                isMulti ? multiComparison?.state.session_id ?? null : null
+              }
+              onComparisonState={(state) =>
+                setMultiComparison((prev) =>
+                  prev ? { ...prev, state } : prev,
+                )
+              }
+              selectedDetailPath={isMulti ? effectiveDetailPath : null}
+              onSelectDetailPath={setSelectedDetailPath}
+              onComparisonSnapshot={handleComparisonSnapshot}
+              onApplyPairwiseOptionChange={handlePairwiseOptionChange}
+              // Remounts the chat when the mode flips, which clears
+              // history. The two modes answer from different factual
+              // scopes, so carrying pairwise answers into a four-way
+              // conversation would leave stale claims on screen.
+              key={isMulti ? "multi" : "single"}
             />
           </div>
+
         </section>
 
         {/* ---- Detail ---- */}
         <NodePanel
           node={selectedNode}
-          result={result}
+          result={displayedResult}
           onClose={() => setSelectedId(null)}
         />
       </div>
