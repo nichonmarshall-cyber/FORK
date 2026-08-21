@@ -25,26 +25,29 @@ Many college students—especially first-generation students—make life-changin
 Examples include:
 
 - Should I change my major after completing 72 credits?
-- Should I graduate now or stay another semester?
-- Should I work more hours during the school year?
-- Is a master's degree worth the additional debt?
-- How much additional student debt is financially reasonable?
+- How many of my credits actually count toward the new degree?
+- How much longer will this take, and what will it cost?
+- Is the earnings difference worth the additional time?
 
 ## How It Works
 
 ### 1. Collects
 
-The platform collects relevant information conversationally through the AI interface.
+Fork collects academic information two ways: entered directly by the student, or read from an uploaded UNT degree audit.
 
 ### 2. Structures
 
-The conversation is converted into validated inputs.
+Uploaded documents are parsed into a normalized academic record. Manual entry is validated into the same shape.
 
-### 3. Calculates
+### 3. Confirms
+
+Nothing is calculated from a document until the student has reviewed Fork's reading of it and confirmed it is correct.
+
+### 4. Calculates
 
 Deterministic algorithms calculate projections using public data.
 
-### 4. Explains
+### 5. Explains
 
 The AI explains the results, assumptions, limitations, and data sources in plain language.
 
@@ -55,38 +58,57 @@ The AI explains the results, assumptions, limitations, and data sources in plain
 - Every assumption is transparent.
 - Every result is explainable.
 - Public datasets are preferred.
-- The platform grows through modular Decision Paths.
+- Confirmation is not verification—Fork checks its own reading with the student, not with the university.
 
-## Version 1 Decision Paths
+## What Fork Does
 
 ### Change My Major
 
-Projects:
+Compares the student's current major against up to four alternatives at once, projecting for each:
 
-- Lost credits
+- Credits that carry over, and credits lost
 - Additional semesters
-- Tuition differences
-- Expected earnings differences
+- Tuition difference
+- Expected earnings difference
 
-### Graduate Now vs. Stay Another Semester
+Every figure carries its source and the date that source was accurate.
 
-Projects:
+### Degree Audit Upload
 
-- Additional tuition and fees
-- Foregone earnings
-- Additional borrowing
-- Potential benefits of staying
+A student can optionally upload their UNT degree audit instead of estimating.
 
-## Planned Technology Stack
+Fork reads the document, normalizes it, and shows what it found—completed hours, hours in progress, catalog year, and every course—before any of it is used. The student confirms or corrects that reading first.
+
+The parser separates completed coursework from work in progress, keeps repeated attempts visible without counting them twice, and checks its own arithmetic against the totals the audit states about itself. When those disagree, Fork says so rather than serving a figure it can't stand behind.
+
+### What-If Audits
+
+A degree audit establishes what a student has earned. It does not establish how much of that counts toward a *different* degree.
+
+A What-If audit does. When a student uploads one for the major they're considering, Fork resolves it to that specific program and uses its figures for that comparison only—never for another major, and never as a universal transfer number. Options without a matching What-If keep manual estimation.
+
+When two confirmed documents disagree, Fork shows the disagreement and asks the student how to read them together before calculating.
+
+### Decision Map
+
+Results are laid out as a map of what Fork can answer, what it still needs, and what it cannot determine. Every node opens to show the figure, where it came from, and what it does not tell you.
+
+### Ask Fork
+
+Follow-up questions in plain language, answered against the last calculation the student actually ran. The AI never recomputes a number and never sees an input the engine rejected.
+
+## Technology Stack
 
 | Layer | Technology |
 |---|---|
 | Frontend | React, Next.js, TypeScript, Tailwind CSS |
 | Backend | Python, FastAPI |
-| Database | PostgreSQL or Supabase |
+| Documents | pypdf, deterministic UNT audit parser |
 | AI | Provider-agnostic LLM interface |
 | Calculations | Python Decision Path modules |
-| API format | Anthropic-compatible interface |
+| State | In-memory sessions; no student data is stored |
+
+Uploaded documents are parsed in memory and never written to disk. Sessions live in the running process and clear on restart. A degree audit is an education record, and Fork keeps one only as long as the visit.
 
 ## Repository Structure
 
@@ -95,16 +117,38 @@ fork/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── frontend/
-├── backend/
 │   ├── app/
+│   ├── components/
+│   └── lib/
+├── backend/
+│   ├── main.py
 │   ├── ai/
+│   ├── academic_record/
+│   ├── audit_import/
+│   │   └── unt/
+│   ├── documents/
+│   ├── session/
+│   ├── conversation/
 │   ├── decision_paths/
-│   │   ├── change_major/
-│   │   └── graduate_now_vs_stay/
+│   │   └── change_major/
+│   ├── data_loading/
 │   └── data_sources/
-└── docs/
+└── tools/
 ```
+
+## Data Sources
+
+| Data | Source |
+|---|---|
+| Degree requirements | UNT Registrar transfer guides |
+| Tuition and fees | UNT published rates |
+| Earnings by field | U.S. Department of Education, College Scorecard |
+| Occupational outlook | U.S. Bureau of Labor Statistics |
+
+Every figure Fork displays names its source and that source's date. Where Fork does not have verified data, it says so rather than estimating.
 
 ## Status
 
-Pre-implementation. This repository currently contains planning documentation only.
+Working. The Change My Major path runs end to end—manual entry, degree audit upload, What-If comparison, deterministic calculation, and AI explanation—covered by 570 automated tests.
+
+Fork is currently built for the University of North Texas. Document parsing is tested against real UNT degree audit formats; other institutions would need their own parser and reference data.
