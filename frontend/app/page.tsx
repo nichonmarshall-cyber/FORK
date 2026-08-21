@@ -504,6 +504,7 @@ export default function Home() {
             onSession={setAuditSession}
             onConfirmed={handleAuditConfirmed}
             onReverted={handleAuditReverted}
+            onCorrected={() => setAuditSession((s) => s)}
           />
 
           {error && (

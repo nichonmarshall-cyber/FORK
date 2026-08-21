@@ -3,12 +3,16 @@
 import { useRef, useState } from "react";
 import {
   AuditSession,
+  CorrectionRequest,
   ReviewSummary,
   confirmAudit,
+  fetchSession,
   looksLikePdf,
   revertToManual,
+  saveCorrections,
   uploadAudit,
 } from "@/lib/audit";
+import CourseReviewDialog from "./CourseReviewDialog";
 import { ApiError } from "@/lib/types";
 
 /**
@@ -31,6 +35,7 @@ export default function AuditPanel({
   onSession,
   onConfirmed,
   onReverted,
+  onCorrected,
 }: {
   session: AuditSession | null;
   onSession: (s: AuditSession | null) => void;
@@ -38,11 +43,19 @@ export default function AuditPanel({
    * the figures — this component never writes to the form itself. */
   onConfirmed: (s: AuditSession) => void;
   onReverted: () => void;
+  /** Fires after corrections save. Confirmed figures may have moved, so the
+   * parent re-syncs its inputs -- corrections don't reach the calculation
+   * until the record is confirmed again. */
+  onCorrected: () => void;
 }) {
   const [busy, setBusy] = useState<null | "uploading" | "confirming" | "reverting">(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [showCourses, setShowCourses] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Keyed `${courseKey}:${field}` so each message renders beside the input
+  // that caused it rather than as one banner over a 36-row form.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
@@ -100,6 +113,46 @@ export default function AuditPanel({
     }
   }
 
+  async function handleReopen() {
+    if (!session) return;
+    // Refetched rather than reusing local state: the server record is
+    // authoritative and may have changed since this component last saw it.
+    try {
+      onSession(await fetchSession(session.session_id));
+    } catch {
+      // A failed refetch shouldn't block review -- fall through to what we
+      // already have rather than showing nothing.
+    }
+    setDialogOpen(true);
+  }
+
+  async function handleSaveCorrections(corrections: CorrectionRequest[]) {
+    if (!session) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const next = await saveCorrections(session.session_id, corrections);
+      const errors: Record<string, string> = {};
+      for (const r of next.rejected) {
+        errors[`${r.course_key ?? ""}:${r.field}`] = r.message ?? "Couldn't apply that change.";
+      }
+      setFieldErrors(errors);
+      onSession(next);
+      // Stay open when something was rejected so the student can see which
+      // field and fix it, rather than closing on a partial save.
+      if (next.rejected.length === 0) {
+        setDialogOpen(false);
+        onCorrected();
+      }
+    } catch (e) {
+      // A failed save must not destroy the record or the calculated
+      // decision -- the previous session object is left exactly as it was.
+      setError(e instanceof ApiError ? e.message : "Couldn't save those corrections.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const review = session?.review;
   const confirmed = session?.uploaded_source.is_active ?? false;
   const awaiting = session?.uploaded_source.awaiting_review ?? false;
@@ -124,8 +177,7 @@ export default function AuditPanel({
       {review && awaiting && !busy && (
         <ReviewCard
           review={review}
-          showCourses={showCourses}
-          onToggleCourses={() => setShowCourses((v) => !v)}
+          onOpenDialog={() => setDialogOpen(true)}
           onConfirm={handleConfirm}
           onCancel={handleRevert}
         />
@@ -138,6 +190,7 @@ export default function AuditPanel({
       {confirmed && busy !== "reverting" && (
         <ConfirmedBanner
           review={review}
+          onReview={handleReopen}
           onRevert={handleRevert}
         />
       )}
@@ -153,6 +206,19 @@ export default function AuditPanel({
         >
           {error}
         </p>
+      )}
+
+      {review && (
+        <CourseReviewDialog
+          // Remounts on each open so staged edits never survive a close.
+          key={dialogOpen ? "open" : "closed"}
+          review={review}
+          open={dialogOpen}
+          saving={saving}
+          fieldErrors={fieldErrors}
+          onClose={() => setDialogOpen(false)}
+          onSave={handleSaveCorrections}
+        />
       )}
 
       <input
@@ -245,14 +311,12 @@ function Working() {
 
 function ReviewCard({
   review,
-  showCourses,
-  onToggleCourses,
+  onOpenDialog,
   onConfirm,
   onCancel,
 }: {
   review: ReviewSummary;
-  showCourses: boolean;
-  onToggleCourses: () => void;
+  onOpenDialog: () => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -296,31 +360,15 @@ function ReviewCard({
         </p>
       ))}
 
+      {/* Opens the pop-out rather than expanding here. 36 courses in a
+          320px column produced nested scrollbars and cropped titles. */}
       <button
         type="button"
-        onClick={onToggleCourses}
+        onClick={onOpenDialog}
         className="cursor-pointer text-[11.5px] text-slate-500 underline-offset-2 hover:text-slate-300 hover:underline"
       >
-        {showCourses ? "Hide" : "Show"} the {review.course_count} courses Fork read
+        Review or edit the {review.course_count} courses Fork read
       </button>
-
-      {showCourses && (
-        <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-white/[0.07] bg-black/20 p-2">
-          {review.courses.map((c) => (
-            <CourseRow key={c.key} course={c} />
-          ))}
-          {review.excluded_courses.length > 0 && (
-            <>
-              <p className="px-1 pt-2 text-[10.5px] uppercase tracking-[0.15em] text-slate-600">
-                Not counted
-              </p>
-              {review.excluded_courses.map((c) => (
-                <CourseRow key={c.key} course={c} />
-              ))}
-            </>
-          )}
-        </div>
-      )}
 
       <div className="flex gap-2 pt-0.5">
         <button
@@ -342,25 +390,13 @@ function ReviewCard({
   );
 }
 
-function CourseRow({ course }: { course: { course_code: string; title: string | null; hours: number; status_label: string } }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 px-1 py-0.5 text-[11.5px]">
-      <span className="shrink-0 font-medium tabular-nums text-slate-300">
-        {course.course_code}
-      </span>
-      <span className="truncate text-slate-600">{course.title}</span>
-      <span className="shrink-0 tabular-nums text-slate-500">
-        {course.hours} · {course.status_label}
-      </span>
-    </div>
-  );
-}
-
 function ConfirmedBanner({
   review,
+  onReview,
   onRevert,
 }: {
   review: ReviewSummary | undefined;
+  onReview: () => void;
   onRevert: () => void;
 }) {
   return (
@@ -373,13 +409,22 @@ function ConfirmedBanner({
         Using the degree audit you confirmed
         {review?.prepared_at ? `, prepared ${review.prepared_at}` : ""}.
       </p>
-      <button
-        type="button"
-        onClick={onRevert}
-        className="cursor-pointer text-[11.5px] text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
-      >
-        Go back to entering credits myself
-      </button>
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        <button
+          type="button"
+          onClick={onReview}
+          className="cursor-pointer text-[11.5px] text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+        >
+          Review or correct audit
+        </button>
+        <button
+          type="button"
+          onClick={onRevert}
+          className="cursor-pointer text-[11.5px] text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+        >
+          Remove document and use manual entry
+        </button>
+      </div>
     </div>
   );
 }

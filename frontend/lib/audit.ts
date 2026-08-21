@@ -88,6 +88,30 @@ export interface ChangeMajorInputsFromAudit {
   unavailable: UnavailableInput[];
 }
 
+/** One staged edit. Mirrors the backend CorrectionRequest exactly -- there
+ * is no separate frontend academic-record model, and corrections are the
+ * only way the record changes. */
+export interface CorrectionRequest {
+  field: string;
+  value: string | number | null;
+  course_key?: string;
+}
+
+export interface CorrectionOutcome {
+  applied: boolean;
+  field: string;
+  course_key: string | null;
+  previous_value: string | null;
+  new_value: string | null;
+  message: string | null;
+}
+
+export interface CorrectionResponse extends AuditSession {
+  corrections: CorrectionOutcome[];
+  applied_count: number;
+  rejected: CorrectionOutcome[];
+}
+
 export interface AuditSession {
   session_id: string;
   active_mode: "manual" | "confirmed_upload";
@@ -131,6 +155,33 @@ export async function uploadAudit(file: File): Promise<AuditSession> {
  * It is not verification — nothing has been checked with UNT. */
 export async function confirmAudit(sessionId: string): Promise<AuditSession> {
   return request(`/audit/session/${sessionId}/confirm`, { method: "POST" });
+}
+
+/** Submit every staged edit at once.
+ *
+ * Batched because the backend reconciles the totals after the whole set. One
+ * request per field would re-check against intermediate states that never
+ * existed on screen, and could report a mismatch that resolves itself two
+ * fields later.
+ *
+ * A rejected field does not reject the batch -- valid corrections apply and
+ * `rejected` says which didn't and why.
+ */
+export async function saveCorrections(
+  sessionId: string,
+  corrections: CorrectionRequest[],
+): Promise<CorrectionResponse> {
+  return request(`/audit/session/${sessionId}/corrections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ corrections }),
+  }) as Promise<CorrectionResponse>;
+}
+
+/** Reopen a confirmed record for another look. The server stays the source
+ * of truth, so this just refetches rather than trusting local state. */
+export async function fetchSession(sessionId: string): Promise<AuditSession> {
+  return request(`/audit/session/${sessionId}`, { method: "GET" });
 }
 
 /** Switch back to manual entry, discarding the uploaded record.

@@ -67,6 +67,12 @@ class FieldProvenance(BaseModel):
         if self.extraction_status == ExtractionStatus.STUDENT_ADDED:
             return "Added by you"
         if self.extraction_status == ExtractionStatus.STUDENT_CORRECTED:
+            # Corrected and then confirmed is a third state, not either one
+            # alone. Saying only "corrected" hides that the student signed
+            # off on the result; saying only "confirmed" hides that the
+            # figure is no longer what the document printed.
+            if self.confirmed_by_student:
+                return f"{self.source}, corrected and confirmed by you"
             return f"{self.source}, corrected by you"
         if self.extraction_status == ExtractionStatus.NOT_FOUND:
             return f"Not found in {self.source}"
