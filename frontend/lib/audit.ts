@@ -112,6 +112,81 @@ export interface CorrectionResponse extends AuditSession {
   rejected: CorrectionOutcome[];
 }
 
+/** Where a document's program resolved to, or why it didn't.
+ *
+ * `ambiguous` covers both "matches nothing" and "matches several". Both mean
+ * the document supplies no credits: picking one of two Psychology degrees
+ * would attach a B.A.'s applicable hours to a B.S. comparison and label the
+ * guess document-derived.
+ */
+export interface ProgramMatch {
+  quality: "exact" | "ambiguous";
+  program_key: string | null;
+  candidates: string[];
+  reason: string | null;
+}
+
+export interface DocumentClassification {
+  role: "current_audit" | "what_if_audit" | "transcript" | "unsupported";
+  program_name: string | null;
+  program_code: string | null;
+  catalog_year: string | null;
+  prepared_at: string | null;
+  match: ProgramMatch | null;
+}
+
+/** A genuine disagreement between two confirmed documents.
+ *
+ * Not raised for a gap between completed and applicable hours -- those
+ * measure different things, and the difference is ordinary non-transferable
+ * credit rather than a contradiction.
+ */
+export interface Discrepancy {
+  code: "document_date_gap" | "shared_fact_contradiction";
+  user_message: string;
+  technical_detail: string;
+  magnitude: string;
+}
+
+/** Applicable credits for exactly one comparison option. */
+export interface OptionCredits {
+  program_key: string;
+  credits_transferable: number;
+  source: string;
+  source_date: string;
+}
+
+export interface ResolvedDocuments {
+  credits_completed: number | null;
+  credits_in_progress: number | null;
+  credits_source: string | null;
+  credits_source_date: string | null;
+  option_credits: OptionCredits | null;
+  /** What the student typed before a document took over an option, so
+   * reverting restores their figure rather than an empty field. */
+  manual_restore: Record<string, number>;
+  discrepancies: Discrepancy[];
+  /** True while confirmed documents disagree and the student hasn't said how
+   * to read them together. Blocks the option figure, not the shared facts. */
+  requires_acknowledgement: boolean;
+  unresolved: string[];
+}
+
+export interface DocumentsState {
+  current_audit: { present: boolean; confirmed: boolean };
+  what_if: {
+    present: boolean;
+    confirmed: boolean;
+    classification: DocumentClassification | null;
+  };
+  transcript: { present: boolean; supported: boolean; message: string };
+  resolved: ResolvedDocuments;
+  /** Identifies exactly the documents an acknowledgement would apply to.
+   * Sent back on acknowledge so a stale screen can't grant permission for
+   * documents that have since changed. */
+  evidence_fingerprint: string | null;
+}
+
 export interface AuditSession {
   session_id: string;
   active_mode: "manual" | "confirmed_upload";
@@ -119,6 +194,7 @@ export interface AuditSession {
   active_source_label: string;
   review?: ReviewSummary;
   change_major_inputs?: ChangeMajorInputsFromAudit;
+  documents?: DocumentsState;
 }
 
 async function request(path: string, init: RequestInit): Promise<AuditSession> {
@@ -184,10 +260,66 @@ export async function fetchSession(sessionId: string): Promise<AuditSession> {
   return request(`/audit/session/${sessionId}`, { method: "GET" });
 }
 
-/** Switch back to manual entry, discarding the uploaded record.
+/** Upload a second document into an existing session.
+ *
+ * The backend routes on the parser's own is_what_if rather than asking the
+ * student to categorise their upload -- UNT's not-finalized banner already
+ * says which kind it is.
+ */
+export async function uploadWhatIf(
+  sessionId: string,
+  file: File,
+): Promise<AuditSession> {
+  const form = new FormData();
+  form.append("file", file);
+  return request(`/audit/unt/upload?session_id=${sessionId}`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+/** Confirm one specific document.
+ *
+ * Per-document because confirmation asks whether Fork read THIS PDF
+ * correctly. Whether several confirmed documents can be used together is a
+ * different question, answered by acknowledgeDiscrepancies.
+ */
+export async function confirmDocument(
+  sessionId: string,
+  document: "current" | "what_if",
+): Promise<AuditSession> {
+  return request(`/audit/session/${sessionId}/confirm?document=${document}`, {
+    method: "POST",
+  });
+}
+
+/** Accept that confirmed documents disagree, and proceed.
+ *
+ * The fingerprint is the one that was on screen. If the documents changed
+ * since, the backend refuses with 409 rather than granting permission for
+ * facts the student never saw.
+ */
+export async function acknowledgeDiscrepancies(
+  sessionId: string,
+  evidenceFingerprint: string,
+): Promise<AuditSession> {
+  return request(`/audit/session/${sessionId}/acknowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ evidence_fingerprint: evidenceFingerprint }),
+  });
+}
+
+/** Switch back to manual entry, discarding every uploaded document.
  *
  * The discard is the point: leaving a confirmed record in place while manual
- * values drive the calculation is how two sources end up competing. */
+ * values drive the calculation is how two sources end up competing. Clears
+ * the What-If too -- reverting is a statement about the whole academic
+ * source, not just the current audit.
+ *
+ * Distinct from removing a comparison option, which leaves the What-If
+ * stored but dormant. That is a change to what's being compared, not a
+ * decision to stop using documents. */
 export async function revertToManual(sessionId: string): Promise<AuditSession> {
   return request(`/audit/session/${sessionId}/mode?mode=manual`, {
     method: "POST",

@@ -92,8 +92,12 @@ _CORE_HEADING = re.compile(r":\s*UNIVERSITY CORE\b", re.I)
 _HOURS_HEADING = re.compile(r"\(\d+\s+HOURS\)\s*$", re.I)
 
 #: Structural openers introducing a named block in any UNT program.
+#: Requires whitespace after the opening word. UNT writes block names as
+#: "MAJOR IN PSYCHOLOGY (42 HOURS)" and "MAJOR RESIDENCY REQUIREMENT..." --
+#: but its prose also contains "MAJOR/MINOR/CONCENTRATION, AS WELL AS...",
+#: a mid-sentence fragment that a bare ^MAJOR would promote to a block.
 _BLOCK_OPENER = re.compile(
-    r"^(?:MAJOR|MINOR|CONCENTRATION|CERTIFICATE)\b|"
+    r"^(?:MAJOR|MINOR|CONCENTRATION|CERTIFICATE)\s|"
     r"^REQUIRED\b.*\bMAJORS?\b|"
     r"^ADDITIONAL REQUIREMENTS\b",
     re.I,
@@ -140,6 +144,21 @@ def join_wrapped_lines(lines: list[str]) -> list[str]:
         # sentence beneath it into the title would bury the requirement's name
         # in a paragraph of catalog prose.
         if _looks_like_heading(previous):
+            joined.append(stripped)
+            continue
+
+        # And a heading is never a continuation of whatever sits above it. A
+        # long line that doesn't close a sentence usually wraps -- but if the
+        # NEXT line opens a block, the wrap ended and the block begins.
+        #
+        # Without this, one unrecognised banner swallows the heading beneath
+        # it and the whole block vanishes: its hours are never parsed, the
+        # resolver finds no degree total, and a confirmed What-If silently
+        # supplies nothing while the student's manual estimate survives. That
+        # failure reaches the student as a correct-sounding sentence about
+        # student-reported figures, which is close to undiagnosable from the
+        # output alone.
+        if _looks_like_heading(stripped):
             joined.append(stripped)
             continue
 
