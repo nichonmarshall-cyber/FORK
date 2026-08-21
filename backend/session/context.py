@@ -63,6 +63,25 @@ EDITABLE_COURSE_FIELDS = frozenset(
 )
 
 
+class StoredDocument(BaseModel):
+    """One academic document held for the session.
+
+    `correction_revision` exists so an acknowledgement can be tied to the
+    exact version of a document the student was shown. Totals alone aren't
+    enough: an edit that lands back on the same number is still a different
+    document than the one they agreed to proceed with.
+    """
+
+    document_id: str
+    record: StudentAcademicRecord
+    confirmation_status: ConfirmationStatus = ConfirmationStatus.AWAITING_REVIEW
+    correction_revision: int = 0
+
+    @property
+    def is_confirmed(self) -> bool:
+        return self.confirmation_status == ConfirmationStatus.CONFIRMED
+
+
 class UploadedSourceState(BaseModel):
     """Whether an uploaded record exists, and where it stands.
 
@@ -85,6 +104,26 @@ class SessionAcademicContext(BaseModel):
     mode: AcademicInputMode = AcademicInputMode.MANUAL
     uploaded_record: StudentAcademicRecord | None = None
     confirmation_status: ConfirmationStatus | None = None
+    # One current audit, one What-If, one transcript slot. Deliberately not a
+    # generic list: the demo compares one current program against one
+    # prospective one, and a collection that permits four What-Ifs implies a
+    # workflow that doesn't exist yet.
+    what_if_document: StoredDocument | None = None
+    transcript_document: StoredDocument | None = Field(
+        default=None,
+        description="Reserved. No transcript parser exists -- the UI says so "
+                    "rather than accepting a file and doing nothing with it.",
+    )
+
+    #: What the student typed before a document took over that option, so
+    #: reverting restores their own figure rather than an empty field.
+    manual_transferable_by_major: dict[str, int] = Field(default_factory=dict)
+
+    #: The evidence fingerprint an acknowledgement was given for. Compared
+    #: rather than trusted: any change to the documents produces a different
+    #: fingerprint, so old permission cannot carry onto new facts.
+    acknowledged_evidence: str | None = None
+
     degree_match_results: dict | None = Field(
         default=None,
         description="Reserved for the matcher, which is not built yet. Present "
@@ -329,6 +368,81 @@ class SessionAcademicContext(BaseModel):
         self.confirmation_status = None
         self.degree_match_results = None
         self.touch()
+
+    # --- documents ------------------------------------------------------
+
+    def attach_what_if(self, document: "StoredDocument") -> None:
+        """Hold a What-If pending review, replacing any previous one.
+
+        Replacement clears the acknowledgement: permission was given for a
+        document that is no longer part of the comparison.
+        """
+        self.what_if_document = document
+        self.acknowledged_evidence = None
+        self.touch()
+
+    def remove_what_if(self) -> None:
+        """Detach the What-If. Only ever called explicitly -- selecting a
+        different option in the UI is view state and must not detach
+        anything."""
+        self.what_if_document = None
+        self.acknowledged_evidence = None
+        self.touch()
+
+    def remember_manual_transferable(self, major: str, value: int) -> None:
+        self.manual_transferable_by_major[major] = value
+        self.touch()
+
+    def acknowledge(self, evidence: str) -> bool:
+        """Record that the student accepted a specific set of documents.
+
+        The caller passes the fingerprint it displayed. A stale client
+        acknowledging a screen that has since changed is refused rather than
+        granted, which is the difference between consent and a leftover flag.
+        """
+        expected = self.current_evidence_fingerprint()
+        if expected is None or evidence != expected:
+            return False
+        self.acknowledged_evidence = expected
+        self.touch()
+        return True
+
+    @property
+    def is_acknowledged(self) -> bool:
+        expected = self.current_evidence_fingerprint()
+        return expected is not None and self.acknowledged_evidence == expected
+
+    def current_evidence_fingerprint(self) -> str | None:
+        from documents.resolution import (
+            classify_document,
+            detect_discrepancies,
+            evidence_fingerprint,
+        )
+
+        current = self.uploaded_record if self.has_confirmed_record else None
+        what_if = (
+            self.what_if_document.record
+            if self.what_if_document and self.what_if_document.is_confirmed
+            else None
+        )
+        if current is None and what_if is None:
+            return None
+
+        classification = (
+            classify_document(what_if, self._majors) if what_if is not None else None
+        )
+        return evidence_fingerprint(
+            current,
+            0,
+            what_if,
+            self.what_if_document.correction_revision if self.what_if_document else 0,
+            classification,
+            detect_discrepancies(current, what_if),
+        )
+
+    #: Populated by the route from institution reference data. Held rather
+    #: than imported so the session stays free of data-loading concerns.
+    _majors: dict = {}
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)
