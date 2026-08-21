@@ -11,9 +11,11 @@ load_dotenv()  # load .env so the API key is set before anything below
                # tries to use it
 
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from data_loading.loader import UnknownInstitution, build_reference_data
 from decision_paths.change_major import engine as change_major_engine
@@ -63,6 +65,36 @@ def _load_reference_data(institution_id: str = _DEFAULT_INSTITUTION_ID) -> dict:
     # old single-file read had: small files, and a number can be corrected
     # mid-demo without restarting the server.
     return build_reference_data(institution_id)
+
+
+@app.exception_handler(RequestValidationError)
+async def _shape_request_validation_errors(request: Request, exc: RequestValidationError):
+    """Give FastAPI's own request-body rejections Fork's error shape.
+
+    Field constraints on a request model are enforced before the route body
+    runs -- which is what we want, since it means invalid input never reaches
+    an LLM call. But FastAPI's default body is a raw list of pydantic error
+    dicts, while everything else in Fork returns {status, message, errors}.
+    Without this the caller parses two formats depending on which layer
+    caught the problem, and the frontend's parseApiError understands one.
+    """
+    errors = [
+        {
+            "field": ".".join(str(p) for p in e.get("loc", ()) if p != "body"),
+            "message": e.get("msg", "Invalid input."),
+        }
+        for e in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "status": "validation_error",
+                "message": errors[0]["message"] if errors else "Invalid input.",
+                "errors": errors,
+            }
+        },
+    )
 
 
 def _clean_validation_errors(exc: ValidationError) -> list[dict]:
@@ -235,15 +267,44 @@ class ExplainRequest(BaseModel):
 
     current_major: str
     prospective_major: str
-    credits_completed: int
-    credits_transferable: int
+
+    # Constraints mirror ChangeMajorInputs deliberately. This endpoint
+    # recomputes the calculation, so the same inputs must be rejected here
+    # for the same reasons -- but the enforcement has to happen at the
+    # REQUEST boundary, not later when ChangeMajorRequest is constructed.
+    #
+    # Without these, an out-of-range figure is accepted by FastAPI, reaches
+    # handle_pairwise_turn, and spends an intent-classification provider
+    # call before anything checks it. If that call fails the student is told
+    # "Ask Fork is temporarily unavailable" when the actual problem is their
+    # own input, and if it succeeds Fork has paid for a round trip on a
+    # request that was always going to 422.
+    credits_completed: int = Field(..., ge=0, le=300)
+    credits_transferable: int = Field(..., ge=0)
     credits_source: str = "Student-reported"
     credits_transferable_source: str = "Student-reported"
     credits_source_date: str = "Not stated"
-    credits_in_progress: int = 0
-    prospective_credits_required: int | None = None
+    credits_in_progress: int = Field(default=0, ge=0, le=30)
+    prospective_credits_required: int | None = Field(default=None, ge=1, le=300)
     prospective_credits_required_source: str | None = None
     institution_id: str = _DEFAULT_INSTITUTION_ID
+
+    @field_validator("credits_transferable")
+    @classmethod
+    def transferable_cannot_exceed_completed(cls, v, info):
+        """Same cross-field rule ChangeMajorInputs enforces.
+
+        Copied rather than shared because the two models are validated at
+        different layers; if this rule ever changes, both need updating and
+        a test covers each.
+        """
+        completed = info.data.get("credits_completed")
+        if completed is not None and v > completed:
+            raise ValueError(
+                "credits_transferable cannot exceed credits_completed "
+                f"(got {v} transferable vs {completed} completed)."
+            )
+        return v
 
     question: str
     selected_node_id: str | None = None
@@ -724,6 +785,10 @@ async def parse_degree_audit(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 
+class CorrectionBatchBody(BaseModel):
+    corrections: list["CorrectionBody"]
+
+
 class CorrectionBody(BaseModel):
     field: str
     value: str | float | None = None
@@ -836,6 +901,34 @@ def correct_academic_record(session_id: str, correction: CorrectionBody):
         raise HTTPException(status_code=400, detail=outcome.message or "Couldn't apply that change.")
 
     return {"correction": outcome.model_dump(), **_session_payload(session)}
+
+
+@app.post("/audit/session/{session_id}/corrections")
+def correct_academic_record_batch(session_id: str, body: CorrectionBatchBody):
+    """Apply everything the student changed in the review dialog at once.
+
+    Batched rather than one request per field because the totals check runs
+    after the whole set. Applying them one at a time would reconcile against
+    intermediate states that never existed on screen and could report a
+    mismatch that resolves itself two fields later.
+
+    A single invalid field doesn't reject the batch. The valid corrections
+    apply, the outcomes say which one failed and why, and the record is never
+    left in a state the student didn't ask for.
+    """
+    from session.context import CorrectionRequest
+
+    session = _session_or_404(session_id)
+    outcomes = session.apply_corrections(
+        [CorrectionRequest(**c.model_dump()) for c in body.corrections]
+    )
+
+    return {
+        "corrections": [o.model_dump() for o in outcomes],
+        "applied_count": sum(1 for o in outcomes if o.applied),
+        "rejected": [o.model_dump() for o in outcomes if not o.applied],
+        **_session_payload(session),
+    }
 
 
 @app.post("/audit/session/{session_id}/confirm")

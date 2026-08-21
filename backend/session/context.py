@@ -169,8 +169,61 @@ class SessionAcademicContext(BaseModel):
 
         if outcome.applied:
             self.confirmation_status = ConfirmationStatus.AWAITING_REVIEW
+            self._recheck_totals()
             self.touch()
         return outcome
+
+    def apply_corrections(
+        self, corrections: list[CorrectionRequest]
+    ) -> list[CorrectionOutcome]:
+        """Apply a batch of edits, reconciling once at the end.
+
+        The review dialog submits everything the student changed in one go.
+        Applying them individually would re-run the totals check after each
+        field and report intermediate states that never existed on screen.
+
+        Outcomes come back per correction, so a batch where one field is
+        invalid still applies the rest and says which one failed rather than
+        rejecting the lot.
+        """
+        outcomes = [self.apply_correction(c) for c in corrections]
+        self._recheck_totals()
+        return outcomes
+
+    def _recheck_totals(self) -> None:
+        """Re-run the parser's self-check against the corrected record.
+
+        `reconciliation` is computed at parse time and stored, while
+        `completed_hours` is derived live. Without this the two drift apart
+        the moment a student edits an hours field: the totals move and the
+        check keeps comparing the figures it saw originally.
+
+        The comparison is still against what the *document* stated, which is
+        the point — a correction that pulls the totals away from the printed
+        figures is exactly what the student should be told about, not
+        something to paper over by re-baselining.
+        """
+        record = self.uploaded_record
+        if record is None or record.reconciliation is None:
+            return
+
+        from academic_record.enums import CompletionStatus
+
+        record.reconciliation = record.reconciliation.model_copy(
+            update={
+                "computed_completed_hours": round(
+                    sum(c.hours for c in record.courses if c.counts_toward_earned_hours), 1
+                ),
+                "computed_in_progress_hours": round(
+                    sum(
+                        c.hours
+                        for c in record.courses
+                        if c.completion_status == CompletionStatus.IN_PROGRESS
+                    ),
+                    1,
+                ),
+            }
+        )
 
     def _correct_course(self, correction: CorrectionRequest) -> CorrectionOutcome:
         record = self.uploaded_record
