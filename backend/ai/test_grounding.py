@@ -155,6 +155,112 @@ def test_sign_flip_is_not_treated_as_invention(sample_result):
     assert _all_numbers_grounded(text, allowlist)
 
 
+# --- shared JSON parsing (markdown-fence tolerance) --------------------
+#
+# Root cause of a live ai_unavailable failure: the model wrapped its
+# response in a ```json ... ``` fence despite the prompt explicitly
+# saying not to, and a bare json.loads() choked on the fence characters.
+# _parse_model_json() is the one place both classify_intent() and
+# _parse_structured_explanation() parse model output, so this fixes both
+# call sites at once rather than patching one and leaving the other's
+# identical latent bug in place.
+#
+# Deliberately narrow: normalizes ONE known wrapper shape, nothing else.
+# It must never turn into a permissive JSON-repair system.
+
+
+def test_parse_model_json_accepts_raw_json_unchanged():
+    from ai.interface import _parse_model_json
+
+    assert _parse_model_json('{"a": 1}') == {"a": 1}
+
+
+def test_parse_model_json_strips_a_json_tagged_fence():
+    from ai.interface import _parse_model_json
+
+    raw = '```json\n{"a": 1}\n```'
+    assert _parse_model_json(raw) == {"a": 1}
+
+
+def test_parse_model_json_strips_a_plain_fence():
+    from ai.interface import _parse_model_json
+
+    raw = '```\n{"a": 1}\n```'
+    assert _parse_model_json(raw) == {"a": 1}
+
+
+def test_parse_model_json_tolerates_surrounding_whitespace():
+    from ai.interface import _parse_model_json
+
+    raw = '\n\n  ```json\n{"a": 1}\n```  \n'
+    assert _parse_model_json(raw) == {"a": 1}
+
+
+def test_parse_model_json_handles_a_fenced_array_too():
+    from ai.interface import _parse_model_json
+
+    raw = '```json\n[1, 2, 3]\n```'
+    assert _parse_model_json(raw) == [1, 2, 3]
+
+
+def test_parse_model_json_rejects_malformed_json():
+    """Not a repair system -- genuinely broken JSON still fails, fence or
+    no fence."""
+    from ai.interface import _parse_model_json
+
+    assert _parse_model_json('{"a": 1,}') is None
+    assert _parse_model_json('```json\n{"a": 1,}\n```') is None
+    assert _parse_model_json("not json at all") is None
+
+
+def test_parse_model_json_rejects_prose_plus_json():
+    """The whole-response anchor is the point: a fence-free response with
+    the real JSON embedded in prose must NOT be silently extracted --
+    that would be scanning/repair behavior, not wrapper normalization."""
+    from ai.interface import _parse_model_json
+
+    assert _parse_model_json('Here you go: {"a": 1}') is None
+    assert _parse_model_json('{"a": 1}\n\nHope that helps!') is None
+
+
+def test_parse_model_json_rejects_a_fence_with_trailing_prose_outside_it():
+    """The fence must wrap the ENTIRE response -- prose after the closing
+    fence means this isn't the known wrapper shape, so it's left alone
+    (and correctly fails to parse) rather than having the fence stripped
+    out from the middle of the string."""
+    from ai.interface import _parse_model_json
+
+    raw = '```json\n{"a": 1}\n```\nLet me know if you need anything else.'
+    assert _parse_model_json(raw) is None
+
+
+def test_intent_classification_survives_a_fenced_live_style_response():
+    """End to end against the exact failure mode observed live: a
+    well-formed intent wrapped in a ```json fence must now classify
+    successfully instead of returning None."""
+    from ai.interface import ConversationIntent, classify_intent
+
+    fenced = (
+        "```json\n"
+        '{"topic_scope": "timeline", "option_change": "none", '
+        '"referenced_majors": [], "add_options": [], "remove_options": [], '
+        '"priority_update": null, "needs_clarification": false, '
+        '"clarification_type": null, "ambiguous_candidates": []}\n'
+        "```"
+    )
+    with patch("ai.interface._call_model", return_value=fenced):
+        intent = classify_intent(
+            "which gets me out fastest?",
+            {"computer_science": "Computer Science"},
+            current_topic_scope="broad",
+            active_options=["computer_science"],
+            stated_priority=None,
+            selected_detail_path=None,
+        )
+    assert isinstance(intent, ConversationIntent)
+    assert intent.topic_scope == "timeline"
+
+
 # --- deterministic fallback -------------------------------------------------
 
 
@@ -315,7 +421,7 @@ def test_explain_decision_returns_structured_explanation(sample_result):
             node_question=None,
             available_nodes=_AVAILABLE_NODES,
         )
-    assert set(result.keys()) == {"explanation", "used_fallback"}
+    assert set(result.keys()) == {"explanation", "used_fallback", "topic_scope"}
     assert result["used_fallback"] is False
     assert result["explanation"].direct_answer == "Switching costs about $32,931 more."
     assert result["explanation"].key_points[0].title == "Cost"
@@ -355,6 +461,32 @@ def test_explain_decision_falls_back_on_invalid_json(sample_result):
     assert result["explanation"].direct_answer  # fallback still produces real content
 
 
+def test_explain_decision_survives_a_fenced_response_instead_of_falling_back(sample_result):
+    """The same shared parser fix as classify_intent() -- a well-formed
+    explanation wrapped in a ```json fence must be used as-is, not
+    treated as unparseable and downgraded to the deterministic template."""
+    fenced = (
+        "```json\n"
+        + json.dumps(
+            {
+                "direct_answer": "Switching costs about $32,931 more.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        + "\n```"
+    )
+    with patch("ai.interface._call_model", return_value=fenced):
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is False
+    assert result["explanation"].direct_answer == "Switching costs about $32,931 more."
+
+
 def test_explain_decision_falls_back_on_schema_mismatch(sample_result):
     """Valid JSON, but missing the required direct_answer field — must be
     treated the same as invalid JSON, not crash."""
@@ -386,33 +518,27 @@ def test_explain_decision_falls_back_on_invented_number_in_structured_response(s
     assert "999,999" not in result["explanation"].direct_answer
 
 
-# --- question categorization ------------------------------------------------
+# --- topic focus instructions ------------------------------------------------
 
 
-def test_different_question_categories_get_different_focused_instructions():
-    """The five starter prompts must not all produce the same prompt —
-    otherwise they'd tend toward the same generic answer regardless of
-    what was actually asked."""
-    from ai.interface import _question_focus
+def test_each_topic_scope_gets_a_distinct_focused_instruction():
+    """Every classified topic_scope must produce a genuinely different
+    instruction -- otherwise Compare One's questions would tend toward
+    the same generic answer regardless of what was actually classified.
+    This replaced keyword-matching the question text directly (see
+    ai.interface.classify_intent); the scope now comes from the shared
+    intent classifier instead."""
+    from ai.interface import _topic_focus_instruction
 
-    questions = [
-        "Explain the biggest difference",
-        "Why will graduation take longer?",
-        "Break down the additional cost",
-        "Compare the career outlook",
-        "What does this data not tell me?",
-    ]
-    focuses = {_question_focus(q) for q in questions}
-    # All five must be genuinely distinct instructions, not the same
-    # fallback text repeated.
+    scopes = ["broad", "financial", "timeline", "credits", "career"]
+    focuses = {_topic_focus_instruction(s) for s in scopes}
     assert len(focuses) == 5
 
 
-def test_unrecognized_question_gets_the_generic_focus_instruction():
-    from ai.interface import _question_focus
+def test_unrecognized_scope_gets_the_broad_focus_instruction():
+    from ai.interface import _topic_focus_instruction
 
-    generic = _question_focus("What's the weather like today?")
-    assert "specific question asked" in generic
+    assert _topic_focus_instruction("not_a_real_scope") == _topic_focus_instruction("broad")
 
 
 # --- derived-relationship guard ----------------------------------------
@@ -610,6 +736,7 @@ def test_explain_decision_has_no_way_to_receive_prior_ai_prose_as_context():
         "node_label",
         "node_question",
         "available_nodes",
+        "topic_scope",
     }
     # None of these params could plausibly carry prior AI-generated prose.
     for suspicious in ("history", "previous", "prior", "context", "conversation"):
@@ -657,6 +784,52 @@ def test_subjective_magnitude_and_recurrence_claims_are_rejected(sample_result, 
     assert result["used_fallback"] is True, f"should have rejected: {phrasing!r}"
 
 
+# --- unit reframing --------------------------------------------------------
+#
+# The engine only ever states semester counts, never a year-equivalent --
+# "almost a full academic year" is a unit conversion Fork's engine never
+# performed, the same category of invention as an unsupported ratio, just
+# in a different unit instead of a multiplier.
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "that's almost a full year of delay",
+        "nearly a year longer",
+        "about a year of extra time",
+        "close to an academic year",
+    ],
+)
+def test_unit_reframing_into_years_is_rejected(sample_result, phrasing):
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": f"Switching takes longer -- {phrasing}.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True, f"should have rejected: {phrasing!r}"
+
+
+def test_a_literal_year_mention_unrelated_to_duration_is_not_falsely_rejected():
+    """The guard targets a DURATION reframed into years, not any mention
+    of the word "year" -- a dataset release year or similar must not trip
+    it."""
+    from ai.interface import _build_number_allowlist, _has_invented_relationship
+
+    allowlist = _build_number_allowlist({"source": "College Scorecard, released 2026"})
+    text = "This figure was retrieved from data released in 2026."
+    assert _has_invented_relationship(text, allowlist) is False
+
+
 @pytest.mark.parametrize(
     "phrasing",
     [
@@ -677,6 +850,131 @@ def test_approved_fork_voice_is_not_rejected(sample_result, phrasing):
 
     allowlist = _build_number_allowlist(sample_result)
     assert _has_invented_relationship(phrasing, allowlist) is False
+
+
+# --- cross-domain importance ranking -------------------------------------
+#
+# Observed in a real conversational test: "This matters more than the
+# other dimensions here... making it the single dimension with the most
+# downstream consequences." Fork's engine never weighs cost against
+# timeline against career -- any claim that one dimension outranks
+# another is the model's own judgment, not a finding, even when every
+# number in the sentence is individually real and grounded.
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "the earnings difference matters more than the other dimensions here",
+        "this makes it the single dimension with the most downstream consequences",
+        "the timeline impact takes priority over the financial one",
+        "the cost difference outweighs the credit-transfer concerns",
+        "this is the most important factor in the comparison",
+        "career outlook is the most significant consideration here",
+    ],
+)
+def test_cross_domain_importance_claims_are_rejected(sample_result, phrasing):
+    """Every one of these is a ranking claim ACROSS unlike dimensions
+    (cost vs. timeline vs. career), which the engine never computes --
+    distinct from restating a real number or calling out the largest
+    figure WITHIN one already-grounded comparison, which stays approved
+    Fork voice (see test_approved_fork_voice_is_not_rejected)."""
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": f"Switching costs more, and {phrasing}.",
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_decision(
+            sample_result, question="q", node_id=None, node_label=None, node_question=None
+        )
+    assert result["used_fallback"] is True, f"should have rejected: {phrasing!r}"
+
+
+def test_prompt_already_forbids_cross_domain_ranking_for_multi_option():
+    """The multi-option prompt already tells the model not to do this --
+    the regex guard above is the check that doesn't depend on it
+    listening, same philosophy as the payback/ROI guard."""
+    from ai.interface import MULTI_COMPARISON_SYSTEM_PROMPT as p
+
+    assert "never say one matters more than another" in p.lower()
+
+
+# --- alternative-count wording ---------------------------------------------
+#
+# Observed in a real conversational test: a CAREER answer covering four
+# active options opened with "the biggest difference across all three
+# alternatives" -- a spelled-out count that never matches the digit-based
+# numeric-grounding regex, so a plain miscount slipped through ungrounded.
+
+
+def test_counts_alternatives_correctly_accepts_a_matching_spelled_count():
+    from ai.interface import _counts_alternatives_correctly
+
+    assert _counts_alternatives_correctly(
+        "the biggest difference across all four alternatives", active_option_count=4
+    )
+
+
+def test_counts_alternatives_correctly_rejects_a_mismatched_spelled_count():
+    from ai.interface import _counts_alternatives_correctly
+
+    assert not _counts_alternatives_correctly(
+        "the biggest difference across all three alternatives", active_option_count=4
+    )
+
+
+def test_counts_alternatives_correctly_skips_the_check_when_not_applicable():
+    """Compare One never passes an active_option_count -- always passes
+    regardless of what the text says, since the check doesn't apply."""
+    from ai.interface import _counts_alternatives_correctly
+
+    assert _counts_alternatives_correctly(
+        "across all three alternatives", active_option_count=None
+    )
+
+
+def test_multi_comparison_rejects_a_miscounted_alternative_total():
+    """End to end: explain_multi_comparison() must fall back to the
+    deterministic template when the model states a spelled-out
+    alternative count that doesn't match the view's actual option list --
+    reproducing the exact regression (four active options, model said
+    'three')."""
+    from ai.interface import explain_multi_comparison
+
+    view = {
+        "topic_scope": "career",
+        "current_major": "Mechanical & Energy Engineering",
+        "credits_completed": 90,
+        "options": [
+            {"major": "Information Technology", "status": "calculated", "data": {}},
+            {"major": "Business Administration", "status": "calculated", "data": {}},
+            {"major": "Computer Science", "status": "calculated", "data": {}},
+            {"major": "Psychology (B.S.)", "status": "calculated", "data": {}},
+        ],
+        "assumptions": [],
+        "limitations": [],
+    }
+    with patch("ai.interface._call_model") as mock_call:
+        mock_call.return_value = json.dumps(
+            {
+                "direct_answer": (
+                    "The biggest difference across all three alternatives is career outlook."
+                ),
+                "key_points": [],
+                "limitations": [],
+                "still_useful_for": [],
+                "next_step": None,
+                "related_node_ids": [],
+            }
+        )
+        result = explain_multi_comparison(view, "which one has the best career outlook?")
+    assert result["used_fallback"] is True
 
 
 def test_prompt_instructs_against_repeating_the_same_finding():
