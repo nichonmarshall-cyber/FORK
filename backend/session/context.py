@@ -362,11 +362,22 @@ class SessionAcademicContext(BaseModel):
         The clearing is the point. Leaving a confirmed record in place while
         manual values drive the calculation is how two sources end up competing
         without anyone noticing.
+
+        Clears the What-If too. Reverting to manual entry is a statement about
+        the whole academic source, not just the current audit -- a student who
+        asks to enter their own numbers should not find a document still
+        supplying one of them.
+
+        Distinct from removing a comparison option, which leaves the What-If
+        stored but dormant: that is a change to what's being compared, not a
+        decision to stop using documents.
         """
         self.mode = AcademicInputMode.MANUAL
         self.uploaded_record = None
         self.confirmation_status = None
         self.degree_match_results = None
+        self.what_if_document = None
+        self.acknowledged_evidence = None
         self.touch()
 
     # --- documents ------------------------------------------------------
