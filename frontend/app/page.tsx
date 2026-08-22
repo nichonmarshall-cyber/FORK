@@ -222,12 +222,30 @@ export default function Home() {
         // came from a document and which the student estimated. When no
         // audit is active these are omitted and the backend's
         // "Student-reported" defaults apply, exactly as before.
+        //
+        // credits_source and credits_transferable_source are sent
+        // SEPARATELY and from different documents on purpose. The current
+        // audit establishes completed hours; a What-If establishes what
+        // applies to ONE program. Sending only the first is what made a
+        // document-derived transfer figure show up as "Student-reported"
+        // — the number came from the What-If, its provenance didn't.
         ...(auditActive && auditInputs
           ? {
               credits_source: auditInputs.credits_source,
               credits_source_date: auditInputs.credits_source_date,
               credits_in_progress: auditInputs.credits_in_progress,
             }
+          : {}),
+        // Only when the confirmed What-If matches the option actually being
+        // compared. A Psychology What-If must never describe an IT figure,
+        // so this is keyed off the same program_key check the form uses.
+        //
+        // The source string already carries the program name, catalog year
+        // and "confirmed by you", so no new date field is needed — the
+        // existing shared credits_source_date still describes when the
+        // figures were accurate.
+        ...(whatIfAppliesHere && optionCredits
+          ? { credits_transferable_source: optionCredits.source }
           : {}),
       });
       setResult(data);
