@@ -9,19 +9,40 @@ source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## 1b. Create the notebook database
+
+Student accounts and the academic notebook need a database. Locally this is a SQLite file created in `backend/` (gitignored); no setup beyond running the migrations:
+
+```bash
+alembic upgrade head
+```
+
+To use Postgres instead, set `DATABASE_URL` first (a `postgres://` or `postgresql://` URL works as-is; the driver is filled in for you):
+
+```bash
+export DATABASE_URL=postgresql://user:password@localhost:5432/fork
+alembic upgrade head
+```
+
+The anonymous compare flow, audit review, and Ask Fork don't touch the database, so they still work if it isn't set up yet — only `/account` and `/notebook` need it.
+
 ## 2. Run tests (no API key required)
 
 ```bash
 pytest -v
 ```
 
-84 tests should pass across the engine, data loader, major-key resolution, earnings import, and API layer. The calculation engine uses local data and fixed rules, so its tests do not need AI access or a network connection.
+546 tests should pass across the engine, data loader, audit parser, documents, accounts, notebook, and API layer. Account and notebook tests use an in-memory database and need no setup. The calculation engine uses local data and fixed rules, so its tests do not need AI access or a network connection.
 
 ## 3. Run the server
 
 ```bash
 uvicorn main:app --reload
 ```
+
+Sign-in cookies are `Secure` by default. Chrome and Firefox accept that on `http://localhost`; if your browser doesn't, start the server with `FORK_COOKIE_SECURE=false` for local development only.
+
+The frontend reaches `/account` and `/notebook` through its own `/api/fork/*` path, which `frontend/next.config.ts` proxies to this server, so the session cookie is first-party. Open the app at http://localhost:3000, not the API directly.
 
 Open **http://localhost:8000/docs** — that's your free Swagger/OpenAPI UI, generated automatically.
 
@@ -118,3 +139,20 @@ Tuition is projected by full-time **semester**, not by multiplying every credit 
 - Live Scorecard or BLS API refreshes — v1 uses the checked-in processed JSON by design; see `ARCHITECTURE.md`
 - The numeric-provenance check in `ai/interface.py::_verify_no_invented_numbers` is a stub — see the TODO comment in that file
 - Second Decision Path (Graduate Now vs. Stay) — cut from v1 build scope; only add back if time remains
+
+## Accounts and notebook: configuration
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `DATABASE_URL` | backend | Postgres in production. Defaults to `sqlite:///./fork_dev.db`. |
+| `FORK_COOKIE_SECURE` | backend | `true` by default. Only set `false` for plain-HTTP local development. |
+| `FORK_DOCUMENT_STORAGE` | backend | Unset or `none` (default): original files are not stored. `local`: store them on disk — development only. |
+| `FORK_DOCUMENT_STORAGE_DIR` | backend | Folder for `local` storage. Defaults to `./document_storage` (gitignored). |
+| `NEXT_PUBLIC_API_BASE` | frontend | Already used by the app; also where `/api/fork/*` is proxied. |
+| `FORK_API_ORIGIN` | frontend (optional) | Overrides the proxy target if the frontend server should reach the backend at a different address. |
+
+**Deploying (Render):** add a Postgres database, set `DATABASE_URL` on the web service, and run migrations before the app starts, e.g. a start command of `alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT`. Keep one worker: sign-in rate limits and audit review sessions are per process.
+
+**Original-file storage in production** is not configured by this release. `local` writes to the server's disk, which on Render is wiped on every deploy and isn't encrypted at rest, so it must not be used there. A production object store with encryption at rest needs its own backend in `notebook/storage.py`; until then leave `FORK_DOCUMENT_STORAGE` unset and the app tells students their original files aren't kept. Everything Fork reads from a confirmed audit is stored in the database either way.
+
+**Retention:** a notebook is kept until the student deletes their account, which removes every row and stored file belonging to it.

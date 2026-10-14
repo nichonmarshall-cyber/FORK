@@ -97,6 +97,18 @@ Results are laid out as a map of what Fork can answer, what it still needs, and 
 
 Follow-up questions in plain language, answered against the last calculation the student actually ran. The AI never recomputes a number and never sees an input the engine rejected.
 
+### Academic Notebook
+
+A signed-in student's home. It keeps their academic record and shows where every figure in it came from:
+
+- **Snapshot** — major, catalog year, GPA, completed and in-progress credits, degree progress, and credits that would apply to another program. Each figure is labelled as one of four kinds: *from a document you confirmed*, *you reported*, *calculated by Fork*, or *What-If*.
+- **Academic record** — the documents behind those figures. A degree audit or What-If audit is added after the student confirms Fork's reading of it; other documents (transcripts, catalog pages, advising notes) can be recorded but are marked as not read by Fork.
+- **Paths explored** — saved comparisons, recalculated by the engine when saved, with the provenance of each input checked against the record rather than taken from the client. A student can mark which way they're leaning.
+- **Academic journey** — a timeline of meaningful changes: documents added, details updated, comparisons saved, plans chosen.
+- **Before you meet your advisor** — next steps triggered by specific gaps in the record, such as a transfer figure that is still an estimate.
+
+A figure backed by a confirmed document can't be overwritten by a typed one; the student adds a newer document or removes the old one. The compare tool still works without an account.
+
 ## Technology Stack
 
 | Layer | Technology |
@@ -106,9 +118,14 @@ Follow-up questions in plain language, answered against the last calculation the
 | Documents | pypdf, deterministic UNT audit parser |
 | AI | Provider-agnostic LLM interface |
 | Calculations | Python Decision Path modules |
-| State | In-memory sessions; no student data is stored |
+| Accounts & notebook | PostgreSQL in production (SQLite locally), SQLAlchemy, Alembic migrations |
+| Audit review | In-memory sessions |
 
-Uploaded documents are parsed in memory and never written to disk. Sessions live in the running process and clear on restart. A degree audit is an education record, and Fork keeps one only as long as the visit.
+Uploaded audits are parsed in memory and never written to disk, and the review step (correct, confirm) still lives in a short-lived in-memory session. Nothing becomes part of a student's durable record until they are signed in and choose to add a confirmed audit to their notebook. Even then Fork stores a summary of what it read and the student confirmed — hours, program, catalog year, requirement counts — not the course-by-course grade history or the PDF.
+
+**Retention:** Fork keeps a student's notebook until they delete it. Deleting an account from the account page permanently removes the account, every document record and fact, saved comparisons, the timeline, sign-in sessions, and any original files held in document storage.
+
+Original files are stored only for documents the student records themselves, and only when document storage is configured (`FORK_DOCUMENT_STORAGE`). Without it, Fork says so rather than accepting a file it won't keep.
 
 ## Repository Structure
 
@@ -117,11 +134,16 @@ fork/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── frontend/
-│   ├── app/
+│   ├── app/              # / (notebook), /compare, /account
 │   ├── components/
+│   │   └── notebook/
 │   └── lib/
 ├── backend/
 │   ├── main.py
+│   ├── accounts/         # registration, sign-in, sessions, deletion
+│   ├── db/               # models and DATABASE_URL configuration
+│   ├── migrations/       # Alembic
+│   ├── notebook/         # record, documents, scenarios, timeline
 │   ├── ai/
 │   ├── academic_record/
 │   ├── audit_import/
@@ -149,6 +171,6 @@ Every figure Fork displays names its source and that source's date. Where Fork d
 
 ## Status
 
-Working. The Change My Major path runs end to end—manual entry, degree audit upload, What-If comparison, deterministic calculation, and AI explanation—covered by 570 automated tests.
+Working. The Change My Major path runs end to end—manual entry, degree audit upload, What-If comparison, deterministic calculation, and AI explanation—covered by 687 automated tests (546 backend, 141 frontend). Students can keep it all in an academic notebook.
 
 Fork is currently built for the University of North Texas. Document parsing is tested against real UNT degree audit formats; other institutions would need their own parser and reference data.
