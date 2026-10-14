@@ -1,6 +1,7 @@
 "use client";
 
-import { forwardRef, useId, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { forwardRef, useEffect, useId, useMemo, useRef, useState } from "react";
 import AuditPanel from "@/components/AuditPanel";
 import WhatIfPanel from "@/components/WhatIfPanel";
 import DecisionMap from "@/components/DecisionMap";
@@ -9,30 +10,57 @@ import PathNavigator from "@/components/PathNavigator";
 import CompareModeToggle, { CompareMode } from "@/components/form/CompareModeToggle";
 import MultiOptionInputs, {
   DraftOption,
-  MAX_OPTIONS,
   validateAllOptions,
 } from "@/components/form/MultiOptionInputs";
 import NodePanel from "@/components/NodePanel";
 import Sidebar from "@/components/Sidebar";
+import TopBar from "@/components/notebook/TopBar";
+import RecordSaveBar from "@/components/notebook/RecordSaveBar";
 import { NODES_BY_ID, payDelta } from "@/lib/nodes";
 import { MAJORS } from "@/lib/majors";
 import {
   ApiError,
   AppliedOptionChange,
+  CalcRequest,
   CalcResult,
   MultiComparisonResponse,
+  StartComparisonRequest,
   calculateChangeMajor,
   startComparison,
 } from "@/lib/types";
 import { validateCreditsPair } from "@/lib/validation";
 import { AuditSession } from "@/lib/audit";
+import {
+  Notebook,
+  SaveScenarioInput,
+  Snapshot,
+  Student,
+  getMe,
+  getNotebook,
+  hasSignInHint,
+  logout,
+  saveScenario,
+} from "@/lib/notebook";
+import {
+  OptionSource,
+  SharedSource,
+  optionSourceFor,
+  recordSources,
+  sharedProvenanceFor,
+} from "@/lib/compareProvenance";
 
 const money = (n: number) =>
   `${n < 0 ? "−" : ""}$${Math.abs(n).toLocaleString("en-US", {
     maximumFractionDigits: 0,
   })}`;
 
-export default function Home() {
+type SaveStatus =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved"; title: string; forResult: unknown }
+  | { kind: "error"; message: string };
+
+export default function ComparePage() {
   const [currentMajor, setCurrentMajor] = useState("computer_science");
   const [prospectiveMajor, setProspectiveMajor] = useState("information_technology");
   // Raw text, not number — needed to control exactly what's displayed
@@ -47,18 +75,15 @@ export default function Home() {
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const [result, setResult] = useState<CalcResult | null>(null);
-  // The exact inputs that produced `result`. Distinct from the draft form
-  // state above: those change the instant a dropdown moves, while this
-  // only advances when a calculation actually succeeds. Ask Fork reads
-  // THIS, so changing a dropdown without recalculating can never silently
-  // shift the factual context Fork explains away from the numbers still
-  // on screen.
-  const [calculatedInputs, setCalculatedInputs] = useState<{
-    current_major: string;
-    prospective_major: string;
-    credits_completed: number;
-    credits_transferable: number;
-  } | null>(null);
+  // The exact request that produced `result` -- provenance and in-progress
+  // hours included. Distinct from the draft form state above: those change
+  // the instant a dropdown moves, while this only advances when a
+  // calculation actually succeeds. Ask Fork reads THIS and its /explain
+  // recomputes from it, so it must carry everything the original
+  // calculation did; a copy holding only the four numbers grounded the
+  // explanation on a "Student-reported", zero-in-progress recomputation
+  // that differed from the map on screen.
+  const [calculatedInputs, setCalculatedInputs] = useState<CalcRequest | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -73,6 +98,16 @@ export default function Home() {
     transferable: string;
   } | null>(null);
 
+  // --- Notebook ------------------------------------------------------
+  //
+  // Optional. A visitor who never signs in uses this page exactly as
+  // before; nothing below makes a request unless the browser carries the
+  // signed-in hint cookie.
+  const [student, setStudent] = useState<Student | null>(null);
+  const [recordSnapshot, setRecordSnapshot] = useState<Snapshot | null>(null);
+  const [recordBanner, setRecordBanner] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
+
   const auditInputs = auditSession?.change_major_inputs ?? null;
   const auditActive = auditSession?.uploaded_source.is_active ?? false;
   // The one figure a degree audit doesn't establish. The backend says so
@@ -84,14 +119,39 @@ export default function Home() {
   // not detach it or restore that option's manual value.
   const documents = auditSession?.documents ?? null;
   const optionCredits = documents?.resolved.option_credits ?? null;
-  const whatIfAppliesHere =
-    optionCredits !== null && optionCredits.program_key === prospectiveMajor;
 
   const labelForMajor = (key: string) =>
     MAJORS.find((m) => m.key === key)?.label ?? key;
 
   const transferableUnavailable =
     auditInputs?.unavailable.find((u) => u.field === "credits_transferable") ?? null;
+
+  // Every document that could stand behind a figure, from this visit's
+  // audit review and from the saved notebook. A figure carries a document's
+  // label only while it still equals what that document says -- see
+  // lib/compareProvenance.ts.
+  const record = useMemo(() => recordSources(recordSnapshot), [recordSnapshot]);
+  const sharedCandidates: (SharedSource | null)[] = [
+    auditActive && auditInputs
+      ? {
+          completed: auditInputs.credits_completed,
+          credits_source: auditInputs.credits_source,
+          credits_source_date: auditInputs.credits_source_date,
+          credits_in_progress: auditInputs.credits_in_progress,
+        }
+      : null,
+    record.shared,
+  ];
+  const optionCandidates: (OptionSource | null)[] = [
+    optionCredits
+      ? {
+          major: optionCredits.program_key,
+          value: optionCredits.credits_transferable,
+          source: optionCredits.source,
+        }
+      : null,
+    ...record.options,
+  ];
 
   function handleAuditConfirmed(session: AuditSession) {
     const inputs = session.change_major_inputs;
@@ -149,6 +209,17 @@ export default function Home() {
       return;
     }
 
+    // A What-If saved in the notebook covers this option: offer its figure
+    // the same way, keeping the student's own number to come back to.
+    const fromRecord = record.options.find((o) => o.major === next);
+    if (fromRecord) {
+      setManualBackup(
+        (backup) => backup ?? { completed: completedRaw, transferable: transferableRaw },
+      );
+      setTransferableRaw(String(fromRecord.value));
+      return;
+    }
+
     // Moving to an option no document covers: give the student their own
     // figure back rather than leaving another program's number in the field.
     if (manualBackup) setTransferableRaw(manualBackup.transferable);
@@ -179,6 +250,9 @@ export default function Home() {
   const [draftOptions, setDraftOptions] = useState<DraftOption[]>([]);
   const [multiComparison, setMultiComparison] =
     useState<MultiComparisonResponse | null>(null);
+  // The request behind multiComparison, kept so saving to the notebook
+  // sends the figures (and their sources) that were actually compared.
+  const [multiRequest, setMultiRequest] = useState<StartComparisonRequest | null>(null);
   const [selectedDetailPath, setSelectedDetailPath] = useState<string | null>(null);
   const [multiSubmitAttempted, setMultiSubmitAttempted] = useState(false);
 
@@ -195,6 +269,75 @@ export default function Home() {
   const showTransferableError =
     (touched.transferable || submitAttempted) && validation.transferable.error;
 
+  // Which figures on the form a document currently stands behind.
+  const sharedFields = sharedProvenanceFor(validation.completed.value, sharedCandidates);
+  const completedFromDocument = sharedFields.credits_source !== undefined;
+  const completedFromSession =
+    sharedCandidates[0] !== null && validation.completed.value === sharedCandidates[0].completed;
+  const transferSource = optionSourceFor(
+    prospectiveMajor,
+    validation.transferable.value,
+    optionCandidates,
+  );
+  const transferFromSessionWhatIf =
+    transferSource !== undefined && optionCredits !== null && transferSource === optionCredits.source;
+  const anyDocument = auditActive || record.shared !== null || record.options.length > 0;
+
+  /** The request for one pairwise comparison, with the provenance each
+   * figure has earned. When no document backs a figure its source is
+   * omitted and the backend's "Student-reported" default applies, exactly
+   * as before.
+   *
+   * credits_source and credits_transferable_source come from different
+   * documents on purpose. The current audit establishes completed hours; a
+   * What-If establishes what applies to ONE program. Sending only the first
+   * is what once made a document-derived transfer figure show up as
+   * "Student-reported". */
+  function pairwiseRequest(
+    current: string,
+    prospective: string,
+    completed: number,
+    transferable: number,
+  ): CalcRequest {
+    const source = optionSourceFor(prospective, transferable, optionCandidates);
+    return {
+      current_major: current,
+      prospective_major: prospective,
+      credits_completed: completed,
+      credits_transferable: transferable,
+      ...sharedProvenanceFor(completed, sharedCandidates),
+      ...(source ? { credits_transferable_source: source } : {}),
+    };
+  }
+
+  async function runPairwise(request: CalcRequest) {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await calculateChangeMajor(request);
+      setResult(data);
+      setCalculatedInputs(request);
+      setSelectedId("root");
+      setSubmitAttempted(false);
+      return true;
+    } catch (e) {
+      // Deliberately does NOT touch result/selectedId. A failed request —
+      // whether it's a network blip or a server-side rejection — must
+      // never wipe out a map the person already successfully built. Only
+      // a NEW success (above) is allowed to replace what's shown.
+      const message = e instanceof ApiError ? e.message : "Something went wrong.";
+      setError(message);
+      if (e instanceof ApiError && e.field === "credits_transferable") {
+        transferableRef.current?.focus();
+      } else if (e instanceof ApiError && e.field === "credits_completed") {
+        completedRef.current?.focus();
+      }
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitAttempted(true);
@@ -210,68 +353,14 @@ export default function Home() {
       return;
     }
 
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await calculateChangeMajor({
-        current_major: currentMajor,
-        prospective_major: prospectiveMajor,
-        credits_completed: validation.completed.value as number,
-        credits_transferable: validation.transferable.value as number,
-        // Provenance travels with the figures so the panel can say which
-        // came from a document and which the student estimated. When no
-        // audit is active these are omitted and the backend's
-        // "Student-reported" defaults apply, exactly as before.
-        //
-        // credits_source and credits_transferable_source are sent
-        // SEPARATELY and from different documents on purpose. The current
-        // audit establishes completed hours; a What-If establishes what
-        // applies to ONE program. Sending only the first is what made a
-        // document-derived transfer figure show up as "Student-reported"
-        // — the number came from the What-If, its provenance didn't.
-        ...(auditActive && auditInputs
-          ? {
-              credits_source: auditInputs.credits_source,
-              credits_source_date: auditInputs.credits_source_date,
-              credits_in_progress: auditInputs.credits_in_progress,
-            }
-          : {}),
-        // Only when the confirmed What-If matches the option actually being
-        // compared. A Psychology What-If must never describe an IT figure,
-        // so this is keyed off the same program_key check the form uses.
-        //
-        // The source string already carries the program name, catalog year
-        // and "confirmed by you", so no new date field is needed — the
-        // existing shared credits_source_date still describes when the
-        // figures were accurate.
-        ...(whatIfAppliesHere && optionCredits
-          ? { credits_transferable_source: optionCredits.source }
-          : {}),
-      });
-      setResult(data);
-      setCalculatedInputs({
-        current_major: currentMajor,
-        prospective_major: prospectiveMajor,
-        credits_completed: validation.completed.value as number,
-        credits_transferable: validation.transferable.value as number,
-      });
-      setSelectedId("root");
-      setSubmitAttempted(false);
-    } catch (e) {
-      // Deliberately does NOT touch result/selectedId. A failed request —
-      // whether it's a network blip or a server-side rejection — must
-      // never wipe out a map the person already successfully built. Only
-      // a NEW success (above) is allowed to replace what's shown.
-      const message = e instanceof ApiError ? e.message : "Something went wrong.";
-      setError(message);
-      if (e instanceof ApiError && e.field === "credits_transferable") {
-        transferableRef.current?.focus();
-      } else if (e instanceof ApiError && e.field === "credits_completed") {
-        completedRef.current?.focus();
-      }
-    } finally {
-      setLoading(false);
-    }
+    await runPairwise(
+      pairwiseRequest(
+        currentMajor,
+        prospectiveMajor,
+        validation.completed.value as number,
+        validation.transferable.value as number,
+      ),
+    );
   }
 
   const selectedNode = selectedId ? NODES_BY_ID.get(selectedId) ?? null : null;
@@ -342,8 +431,57 @@ export default function Home() {
       // can't see would make "just compare CS and IT" apply to something
       // invisible.
       setMultiComparison(null);
+      setMultiRequest(null);
       setSelectedDetailPath(null);
       setDraftOptions([]);
+    }
+  }
+
+  /** The multi-option request, each option's transfer figure carrying the
+   * source of the document that backs it -- if one does, for that program,
+   * at that value. Previously no source was sent here at all, so a
+   * confirmed audit's completed hours were labelled "Student-reported" in
+   * every multi-option comparison. */
+  function multiRequestFor(
+    current: string,
+    completed: number,
+    options: { major: string; credits_transferable: number | null }[],
+  ): StartComparisonRequest {
+    return {
+      current_major: current,
+      credits_completed: completed,
+      ...sharedProvenanceFor(completed, sharedCandidates),
+      options: options.map((o) => {
+        const source = optionSourceFor(o.major, o.credits_transferable, optionCandidates);
+        return {
+          major: o.major,
+          ...(o.credits_transferable !== null ? { credits_transferable: o.credits_transferable } : {}),
+          ...(source ? { credits_transferable_source: source } : {}),
+        };
+      }),
+    };
+  }
+
+  async function runMulti(request: StartComparisonRequest) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await startComparison(request);
+      setMultiComparison(response);
+      setMultiRequest(request);
+      // Open on the first path that actually has numbers.
+      const firstCalculated = response.comparison.options.find(
+        (o) => o.status === "calculated",
+      );
+      setSelectedDetailPath(firstCalculated?.major_key ?? null);
+      setSelectedId("root");
+      setMultiSubmitAttempted(false);
+    } catch (e) {
+      // Same rule as the pairwise path: a failed request never wipes a
+      // comparison the student already built successfully.
+      setError(e instanceof ApiError ? e.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -361,32 +499,16 @@ export default function Home() {
       return;
     }
 
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await startComparison({
-        current_major: currentMajor,
-        credits_completed: validation.completed.value as number,
-        options: draftOptions.map((o) => ({
+    await runMulti(
+      multiRequestFor(
+        currentMajor,
+        validation.completed.value as number,
+        draftOptions.map((o) => ({
           major: o.major,
           credits_transferable: Number(o.transferableRaw),
         })),
-      });
-      setMultiComparison(response);
-      // Open on the first path that actually has numbers.
-      const firstCalculated = response.comparison.options.find(
-        (o) => o.status === "calculated",
-      );
-      setSelectedDetailPath(firstCalculated?.major_key ?? null);
-      setSelectedId("root");
-      setMultiSubmitAttempted(false);
-    } catch (e) {
-      // Same rule as the pairwise path: a failed request never wipes a
-      // comparison the student already built successfully.
-      setError(e instanceof ApiError ? e.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+      ),
+    );
   }
 
   /** Applies a chat-resolved Compare One "replace" (see
@@ -396,7 +518,12 @@ export default function Home() {
    * uses -- chat never gets a shortcut around validation. When no figure
    * was given yet, only the draft major updates and the transfer field is
    * cleared/invalidated so the OLD major's figure can never be reused for
-   * the new one; Ask Fork's own reply already asked for the real number. */
+   * the new one; Ask Fork's own reply already asked for the real number.
+   *
+   * Carries the same provenance a form submission would. It used to send
+   * the bare figures, so a chat-driven recalculation silently relabelled a
+   * confirmed audit's hours as "Student-reported" and dropped in-progress
+   * hours from the calculation. */
   async function handlePairwiseOptionChange(change: AppliedOptionChange) {
     setProspectiveMajor(change.major);
     if (change.credits_transferable === null) {
@@ -404,27 +531,14 @@ export default function Home() {
       return;
     }
     setTransferableRaw(String(change.credits_transferable));
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await calculateChangeMajor({
-        current_major: currentMajor,
-        prospective_major: change.major,
-        credits_completed: validation.completed.value as number,
-        credits_transferable: change.credits_transferable,
-      });
-      setResult(data);
-      setCalculatedInputs({
-        current_major: currentMajor,
-        prospective_major: change.major,
-        credits_completed: validation.completed.value as number,
-        credits_transferable: change.credits_transferable,
-      });
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    await runPairwise(
+      pairwiseRequest(
+        currentMajor,
+        change.major,
+        validation.completed.value as number,
+        change.credits_transferable,
+      ),
+    );
   }
 
   /** Syncs the canonical comparison snapshot after a chat-driven option
@@ -452,11 +566,222 @@ export default function Home() {
     optionRefs.current[majorKey]?.focus();
   }
 
+  // --- Notebook: identity, prefill, save -----------------------------
+
+  /** Fill the form from the notebook. Values only; the provenance each one
+   * earns is worked out at submit time from the same snapshot, so a value
+   * the student then edits stops claiming the document. */
+  function prefillFromRecord(notebook: Notebook) {
+    const snap = notebook.snapshot;
+    const filled: string[] = [];
+    let current = currentMajor;
+    if (snap.current_major) {
+      current = snap.current_major.value;
+      setCurrentMajor(current);
+      filled.push("your major");
+    }
+    if (snap.credits_completed) {
+      setCompletedRaw(String(snap.credits_completed.value));
+      filled.push("completed credits");
+    }
+    let prospective = prospectiveMajor;
+    if (prospective === current) {
+      prospective = MAJORS.find((m) => m.key !== current)?.key ?? prospective;
+      setProspectiveMajor(prospective);
+    }
+    const applicable = snap.applicable_credits.find((f) => f.scope === prospective);
+    if (applicable) {
+      setTransferableRaw(String(applicable.value));
+      filled.push(`credits that apply to ${labelForMajor(prospective)}`);
+    }
+    setRecordBanner(
+      filled.length
+        ? `Filled in ${filled.join(", ")} from your notebook. Change anything and it becomes your own figure.`
+        : "Your notebook doesn't have academic figures yet — enter them below.",
+    );
+  }
+
+  /** Reopen a saved comparison on the map. Recalculated now, from the
+   * saved inputs, with provenance re-checked against the current record --
+   * the same rules a fresh comparison follows. */
+  function openScenario(notebook: Notebook, scenarioId: string) {
+    const scenario = notebook.scenarios.find((s) => s.id === scenarioId);
+    if (!scenario) {
+      setRecordBanner("That comparison isn't in your notebook.");
+      return;
+    }
+    const inputs = scenario.inputs;
+    const completed = inputs.credits_completed.value;
+    // Sources from the snapshot directly: state set during this function
+    // isn't visible to the request builders until the next render.
+    const rec = recordSources(notebook.snapshot);
+    const shared = sharedProvenanceFor(completed, [rec.shared]);
+    setCurrentMajor(inputs.current_major);
+    setCompletedRaw(String(completed));
+    setRecordBanner(
+      `Showing “${scenario.title}” from your notebook, recalculated with Fork's current data.`,
+    );
+
+    if (inputs.options.length === 1 && inputs.options[0].credits_transferable !== null) {
+      const option = inputs.options[0];
+      const value = option.credits_transferable as number;
+      setCompareMode("one");
+      setProspectiveMajor(option.major);
+      setTransferableRaw(String(value));
+      const source = optionSourceFor(option.major, value, rec.options);
+      void runPairwise({
+        current_major: inputs.current_major,
+        prospective_major: option.major,
+        credits_completed: completed,
+        credits_transferable: value,
+        ...shared,
+        ...(source ? { credits_transferable_source: source } : {}),
+      });
+      return;
+    }
+
+    setCompareMode("multiple");
+    setDraftOptions(
+      inputs.options.map((o) => ({
+        major: o.major,
+        transferableRaw: o.credits_transferable === null ? "" : String(o.credits_transferable),
+      })),
+    );
+    void runMulti({
+      current_major: inputs.current_major,
+      credits_completed: completed,
+      ...shared,
+      options: inputs.options.map((o) => {
+        const source = optionSourceFor(o.major, o.credits_transferable, rec.options);
+        return {
+          major: o.major,
+          ...(o.credits_transferable !== null ? { credits_transferable: o.credits_transferable } : {}),
+          ...(source ? { credits_transferable_source: source } : {}),
+        };
+      }),
+    });
+  }
+
+  // On arrival only: who's signed in, and whether the link asked for the
+  // notebook's figures, a saved comparison, or the audit panel. Every state
+  // update happens after a request resolves, never synchronously here.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("panel") === "audit") {
+      document.getElementById("audit-panel")?.scrollIntoView({ block: "start" });
+    }
+    if (!hasSignInHint()) return;
+    let cancelled = false;
+    getMe()
+      .then(async (me) => {
+        if (cancelled || !me) return;
+        setStudent(me);
+        const notebook = await getNotebook();
+        if (cancelled) return;
+        setRecordSnapshot(notebook.snapshot);
+        const scenarioId = params.get("scenario");
+        if (scenarioId) openScenario(notebook, scenarioId);
+        else if (params.get("from") === "record") prefillFromRecord(notebook);
+      })
+      .catch(() => {
+        // The notebook is an extra here, never a requirement: if it can't
+        // be reached the page works exactly as it does signed out.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Arrival-time only by design; see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function refreshRecord() {
+    try {
+      setRecordSnapshot((await getNotebook()).snapshot);
+    } catch {
+      // Leave the last snapshot in place; provenance stays conservative.
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await logout();
+    } finally {
+      setStudent(null);
+      setRecordSnapshot(null);
+    }
+  }
+
+  /** Save what's on the map to the notebook. Sends the inputs of the
+   * calculation that produced it -- never the result; the backend
+   * recalculates and checks every source label against the record. */
+  async function handleSaveToNotebook() {
+    let input: SaveScenarioInput | null = null;
+    if (!isMulti && calculatedInputs) {
+      input = {
+        current_major: calculatedInputs.current_major,
+        credits_completed: calculatedInputs.credits_completed,
+        credits_in_progress: calculatedInputs.credits_in_progress ?? 0,
+        credits_source: calculatedInputs.credits_source ?? "Student-reported",
+        options: [
+          {
+            major: calculatedInputs.prospective_major,
+            credits_transferable: calculatedInputs.credits_transferable,
+            credits_transferable_source:
+              calculatedInputs.credits_transferable_source ?? "Student-reported",
+          },
+        ],
+      };
+    } else if (isMulti && multiRequest && multiComparison) {
+      // The options active NOW, which a chat instruction may have changed
+      // since the form was submitted. Figures come from the submitted
+      // request where it has them, otherwise from the calculation itself.
+      const submitted = new Map(multiRequest.options.map((o) => [o.major, o]));
+      input = {
+        current_major: multiRequest.current_major,
+        credits_completed: multiRequest.credits_completed,
+        credits_in_progress: multiRequest.credits_in_progress ?? 0,
+        credits_source: multiRequest.credits_source ?? "Student-reported",
+        options: activePaths.map((o) => {
+          const sent = submitted.get(o.major_key);
+          const fromCalc = o.dimensions?.credits?.credits_transferable?.value ?? null;
+          return {
+            major: o.major_key,
+            credits_transferable: sent?.credits_transferable ?? fromCalc,
+            credits_transferable_source:
+              sent?.credits_transferable_source ?? "Student-reported",
+          };
+        }),
+      };
+    }
+    if (!input) return;
+    input.audit_session_id = auditSession?.session_id ?? null;
+
+    setSaveStatus({ kind: "saving" });
+    try {
+      const { scenario } = await saveScenario(input);
+      setSaveStatus({
+        kind: "saved",
+        title: scenario.title,
+        forResult: isMulti ? multiComparison : result,
+      });
+    } catch (e) {
+      setSaveStatus({
+        kind: "error",
+        message: e instanceof ApiError ? e.message : "Couldn't save to your notebook.",
+      });
+    }
+  }
+
+  const savedForCurrent =
+    saveStatus.kind === "saved" &&
+    saveStatus.forResult === (isMulti ? multiComparison : result);
+
   return (
-    <div className="min-h-screen bg-[#05070d] text-slate-200">
+    <div className="min-h-screen w-full bg-[#05070d] text-slate-200">
+      <TopBar student={student} current="compare" onSignOut={handleSignOut} />
       <div className="mx-auto grid max-w-[1840px] grid-cols-1 gap-4 p-4 xl:grid-cols-[172px_250px_minmax(0,1fr)_300px]">
         <div className="hidden xl:block">
-          <Sidebar result={displayedResult} />
+          <Sidebar result={displayedResult} signedIn={student !== null} />
         </div>
 
         {/* ---- Scenario ---- */}
@@ -469,6 +794,12 @@ export default function Home() {
               Everything on the map is calculated from these four values.
             </p>
           </div>
+
+          {recordBanner && (
+            <p role="status" className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-[12px] leading-relaxed text-cyan-100/90">
+              {recordBanner}
+            </p>
+          )}
 
           <form
             onSubmit={isMulti ? handleMultiSubmit : handleSubmit}
@@ -498,12 +829,14 @@ export default function Home() {
                 onChange={setCompletedRaw}
                 onBlur={() => setTouched((t) => ({ ...t, completed: true }))}
                 hint={
-                  auditActive
+                  completedFromSession
                     ? "From your confirmed UNT degree audit."
-                    : "Courses you've finished and passed."
+                    : completedFromDocument
+                      ? "From the degree audit in your notebook."
+                      : "Courses you've finished and passed."
                 }
                 error={showCompletedError ? validation.completed.error : null}
-                provenance={auditActive ? "document" : null}
+                provenance={completedFromDocument ? "document" : anyDocument ? "student" : null}
               />
               {!isMulti && (
                 <NumberField
@@ -520,21 +853,24 @@ export default function Home() {
                   onChange={setTransferableRaw}
                   onBlur={() => setTouched((t) => ({ ...t, transferable: true }))}
                   hint={
-                    whatIfAppliesHere
+                    transferFromSessionWhatIf
                       ? `From your confirmed What-If audit for ${labelForMajor(
                           prospectiveMajor,
                         )}.`
-                      : transferableUnavailable
-                        ? transferableUnavailable.user_message
-                        : "Counting toward the new degree, electives included."
+                      : transferSource
+                        ? `From the What-If audit in your notebook for ${labelForMajor(
+                            prospectiveMajor,
+                          )}.`
+                        : transferableUnavailable
+                          ? transferableUnavailable.user_message
+                          : "Counting toward the new degree, electives included."
                   }
                   error={showTransferableError ? validation.transferable.error : null}
                   // A document figure and a typed estimate must not look the
-                  // same. Once a What-If supplies this option the badge says
-                  // so; otherwise it stays the student's own number.
-                  provenance={
-                    whatIfAppliesHere ? "document" : auditActive ? "student" : null
-                  }
+                  // same. Once a What-If supplies this option -- at this
+                  // value -- the badge says so; otherwise it stays the
+                  // student's own number.
+                  provenance={transferSource ? "document" : anyDocument ? "student" : null}
                 />
               )}
 
@@ -598,13 +934,18 @@ export default function Home() {
             />
           )}
 
-          <AuditPanel
-            session={auditSession}
-            onSession={setAuditSession}
-            onConfirmed={handleAuditConfirmed}
-            onReverted={handleAuditReverted}
-            onCorrected={() => setAuditSession((s) => s)}
-          />
+          <div id="audit-panel" className="scroll-mt-4 space-y-3">
+            <AuditPanel
+              session={auditSession}
+              onSession={setAuditSession}
+              onConfirmed={handleAuditConfirmed}
+              onReverted={handleAuditReverted}
+              onCorrected={() => setAuditSession((s) => s)}
+            />
+            {student && auditSession && (
+              <RecordSaveBar session={auditSession} onSaved={refreshRecord} />
+            )}
+          </div>
 
           {error && (
             <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-rose-300">
@@ -645,6 +986,44 @@ export default function Home() {
                 value={payDelta(displayedResult.summary.annual_salary_delta)}
                 bad={(displayedResult.summary.annual_salary_delta ?? 0) < 0}
               />
+
+              {student ? (
+                <div className="pt-1">
+                  {savedForCurrent && saveStatus.kind === "saved" ? (
+                    <p role="status" className="text-[12px] text-emerald-300">
+                      Saved to your notebook as “{saveStatus.title}”.{" "}
+                      <Link href="/#comparisons" className="text-cyan-300 hover:underline">
+                        Open notebook
+                      </Link>
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleSaveToNotebook}
+                      disabled={saveStatus.kind === "saving" || loading}
+                      className="w-full rounded-xl border border-cyan-400/30 px-4 py-2 text-[12.5px] font-medium text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-60"
+                    >
+                      {saveStatus.kind === "saving"
+                        ? "Saving…"
+                        : isMulti
+                          ? "Save this comparison to my notebook"
+                          : "Save to my notebook"}
+                    </button>
+                  )}
+                  {saveStatus.kind === "error" && (
+                    <p role="alert" className="mt-2 text-[12px] text-rose-300">
+                      {saveStatus.message}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[11.5px] text-slate-500">
+                  <Link href="/" className="text-cyan-300 hover:underline">
+                    Sign in
+                  </Link>{" "}
+                  to keep comparisons in a notebook.
+                </p>
+              )}
             </div>
           )}
         </section>
@@ -713,7 +1092,7 @@ export default function Home() {
             </div>
           )}
 
-          <div className="border-t border-white/[0.07] p-4">
+          <div id="ask-fork" className="border-t border-white/[0.07] p-4">
             <DecisionChat
               result={displayedResult}
               calcInputs={calculatedInputs}
@@ -890,7 +1269,7 @@ interface NumberFieldProps {
   hint: string;
   error: string | null;
   /** Where this value came from, shown as a small badge beside the label.
-   * Only set once an audit is confirmed -- with everything typed by hand
+   * Only set once a document is in play -- with everything typed by hand
    * there's nothing to distinguish, and badging every field would be
    * noise. */
   provenance?: "document" | "student" | null;

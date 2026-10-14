@@ -376,7 +376,7 @@ describe("state separation", () => {
   });
 
   it("Ask Fork sends only the session id, never the displayed path", async () => {
-    const calls: { url: string; body: any }[] = [];
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
