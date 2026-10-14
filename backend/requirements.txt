@@ -7,3 +7,7 @@ pypdf==5.1.0
 python-multipart==0.0.20
 python-dotenv==1.0.1
 openpyxl==3.1.5
+# Student accounts and the academic notebook (DATABASE_URL; see QUICKSTART.md)
+sqlalchemy==2.0.43
+alembic==1.16.5
+psycopg[binary]==3.2.10
