@@ -3,26 +3,42 @@
 /**
  * Left rail.
  *
- * Only "Decision Map" is built. The rest are listed because they're on the
- * roadmap and the shape of the product is easier to understand with them
- * visible — but they're rendered as disabled with a "soon" tag rather than
- * as links that go nowhere. A dead nav item is worse in a live demo than an
- * honest one.
+ * "Decision Map" is this page. The notebook items link into the student's
+ * notebook when they're signed in; signed out, they point at sign-in rather
+ * than at pages that would only bounce. Anything not built is rendered
+ * disabled with a "soon" tag rather than as a link that goes nowhere. A dead
+ * nav item is worse in a live demo than an honest one.
  */
 
+import Link from "next/link";
 import { NODES } from "@/lib/nodes";
 import { CalcResult } from "@/lib/types";
 
-const NAV = [
-  { label: "Decision Map", built: true },
-  { label: "My Decisions", built: false },
-  { label: "Reports", built: false },
-  { label: "Saved Paths", built: false },
-  { label: "Profile", built: false },
-  { label: "Settings", built: false },
-];
+type NavItem =
+  | { label: string; kind: "current" }
+  | { label: string; kind: "link"; href: string }
+  | { label: string; kind: "soon" };
 
-export default function Sidebar({ result }: { result: CalcResult | null }) {
+function navFor(signedIn: boolean): NavItem[] {
+  const notebook = (label: string, href: string): NavItem =>
+    ({ label, kind: "link", href: signedIn ? href : "/" });
+  return [
+    { label: "Decision Map", kind: "current" },
+    notebook("My Notebook", "/"),
+    notebook("My Decisions", "/#comparisons"),
+    notebook("Profile", "/#record-details"),
+    notebook("Settings", "/account"),
+    { label: "Reports", kind: "soon" },
+  ];
+}
+
+export default function Sidebar({
+  result,
+  signedIn = false,
+}: {
+  result: CalcResult | null;
+  signedIn?: boolean;
+}) {
   // Progress is counted from the map itself rather than hardcoded, so it
   // can't drift out of sync when nodes are added or removed.
   const total = NODES.length;
@@ -54,24 +70,33 @@ export default function Sidebar({ result }: { result: CalcResult | null }) {
       </div>
 
       <ul className="space-y-0.5">
-        {NAV.map((item) => (
+        {navFor(signedIn).map((item) => (
           <li key={item.label}>
-            <button
-              disabled={!item.built}
-              aria-current={item.built ? "page" : undefined}
-              className={
-                item.built
-                  ? "w-full rounded-lg bg-cyan-400/10 px-3 py-2 text-left text-[13.5px] font-medium text-cyan-300"
-                  : "flex w-full cursor-not-allowed items-center justify-between rounded-lg px-3 py-2 text-left text-[13.5px] text-slate-600"
-              }
-            >
-              {item.label}
-              {!item.built && (
+            {item.kind === "current" ? (
+              <span
+                aria-current="page"
+                className="block w-full rounded-lg bg-cyan-400/10 px-3 py-2 text-left text-[13.5px] font-medium text-cyan-300"
+              >
+                {item.label}
+              </span>
+            ) : item.kind === "link" ? (
+              <Link
+                href={item.href}
+                className="block w-full rounded-lg px-3 py-2 text-left text-[13.5px] text-slate-400 transition hover:bg-white/[0.03] hover:text-slate-200"
+              >
+                {item.label}
+              </Link>
+            ) : (
+              <button
+                disabled
+                className="flex w-full cursor-not-allowed items-center justify-between rounded-lg px-3 py-2 text-left text-[13.5px] text-slate-600"
+              >
+                {item.label}
                 <span className="rounded border border-white/10 px-1.5 py-px text-[9.5px] uppercase tracking-wider text-slate-600">
                   soon
                 </span>
-              )}
-            </button>
+              </button>
+            )}
           </li>
         ))}
       </ul>
