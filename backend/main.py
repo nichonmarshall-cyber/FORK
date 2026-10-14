@@ -75,6 +75,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Student accounts and the academic notebook. Additive: nothing below this
+# point depends on them, and the anonymous compare flow, audit review, and
+# Ask Fork work exactly as before for a visitor who never signs in. The
+# notebook routes are reached through the frontend's same-origin proxy so the
+# session cookie stays first-party; see accounts/auth.py.
+from accounts.routes import router as account_router  # noqa: E402
+from notebook.routes import router as notebook_router  # noqa: E402
+
+app.include_router(account_router)
+app.include_router(notebook_router)
+
 # Until the request carries an institution_id (Stage 2), everything runs
 # against the one supported school.
 _DEFAULT_INSTITUTION_ID = "unt"
