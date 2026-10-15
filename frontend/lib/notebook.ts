@@ -25,6 +25,8 @@ export interface Student {
   email: string;
   display_name: string | null;
   institution_id: string;
+  /** The shared, read-only demo notebook for a fictional student. */
+  is_demo?: boolean;
   created_at: string | null;
 }
 
@@ -102,6 +104,9 @@ export interface NotebookDocument {
     requirements?: RequirementCounts;
     degree_hours?: DegreeHours | null;
     supplies_applicable_credits?: boolean;
+    read_at?: string | null;
+    file_kept?: boolean;
+    gpa?: { cumulative_gpa: number; reconciled: boolean; note: string | null } | null;
     applicable_credits?: number;
     unresolved?: string[];
   };
@@ -310,6 +315,10 @@ export const login = (email: string, password: string) =>
     method: "POST",
     body: { email, password },
   }).then((r) => r.student);
+
+/** Sign in to the read-only demo notebook. */
+export const startDemo = () =>
+  call<{ student: Student }>("/account/demo", { method: "POST" }).then((r) => r.student);
 
 export const logout = () => call<{ status: string }>("/account/logout", { method: "POST" });
 

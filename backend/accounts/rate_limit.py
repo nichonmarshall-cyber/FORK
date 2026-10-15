@@ -59,6 +59,10 @@ failed_login_by_email = RateLimiter(limit=8, window_seconds=15 * 60)
 register_by_ip = RateLimiter(limit=10, window_seconds=60 * 60)
 
 
+#: Demo sign-ins from one client address.
+demo_by_ip = RateLimiter(limit=30, window_seconds=60 * 60)
+
+
 def reset_all() -> None:
-    for limiter in (login_by_ip, failed_login_by_email, register_by_ip):
+    for limiter in (login_by_ip, failed_login_by_email, register_by_ip, demo_by_ip):
         limiter.reset()

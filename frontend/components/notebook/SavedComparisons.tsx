@@ -22,6 +22,7 @@ import {
   updateScenario,
 } from "@/lib/notebook";
 import ProvenanceBadge from "./ProvenanceBadge";
+import { useReadOnly } from "./readOnly";
 
 export default function SavedComparisons({
   notebook,
@@ -84,6 +85,7 @@ function ScenarioCard({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const readOnly = useReadOnly();
 
   async function run(action: () => Promise<unknown>, done?: string) {
     setBusy(true);
@@ -197,7 +199,7 @@ function ScenarioCard({
         Time, cost and earnings differences are Fork&rsquo;s calculation from these inputs.
       </p>
 
-      <fieldset className="mt-3" disabled={busy}>
+      {!readOnly && <fieldset className="mt-3" disabled={busy}>
         <legend className="text-[10.5px] uppercase tracking-[0.15em] text-slate-500">
           Which way are you leaning?
         </legend>
@@ -228,13 +230,13 @@ function ScenarioCard({
             );
           })}
         </div>
-      </fieldset>
+      </fieldset>}
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-[12px]">
         <Link href={`/compare?scenario=${s.id}`} className="text-cyan-300 hover:underline">
           Open on the map
         </Link>
-        <button
+        {!readOnly && <button
           type="button"
           disabled={busy}
           onClick={() =>
@@ -246,8 +248,8 @@ function ScenarioCard({
           className="text-slate-400 hover:text-cyan-200 disabled:opacity-60"
         >
           Recheck against my record
-        </button>
-        {confirmRemove ? (
+        </button>}
+        {readOnly ? null : confirmRemove ? (
           <span className="flex items-center gap-2">
             <span className="text-slate-400">Remove this comparison?</span>
             <button

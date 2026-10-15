@@ -10,7 +10,10 @@
  */
 
 import Link from "next/link";
-import type { Notebook } from "@/lib/notebook";
+import { useEffect, useState } from "react";
+import { logout, type Notebook } from "@/lib/notebook";
+import BrainMap from "./BrainMap";
+import { ReadOnlyContext } from "./readOnly";
 import SnapshotCard from "./SnapshotCard";
 import RecordSection from "./RecordSection";
 import SavedComparisons from "./SavedComparisons";
@@ -25,20 +28,63 @@ export default function NotebookHome({
   onNotebook: (next: Notebook) => void;
 }) {
   const name = notebook.student.display_name;
+  const isDemo = notebook.student.is_demo === true;
+  // "#map" opens the brain map directly, so it can be linked to.
+  const [view, setView] = useState<"notebook" | "map">(() =>
+    typeof window !== "undefined" && window.location.hash === "#map" ? "map" : "notebook",
+  );
+  useEffect(() => {
+    const onHash = () => setView(window.location.hash === "#map" ? "map" : "notebook");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  function choose(next: "notebook" | "map") {
+    setView(next);
+    const url = next === "map" ? "#map" : window.location.pathname;
+    window.history.replaceState(null, "", url);
+  }
 
   return (
+    <ReadOnlyContext.Provider value={isDemo}>
     <main className="mx-auto max-w-[1240px] px-4 pb-16 pt-6">
-      <div className="mb-6">
-        <h1 className="text-[22px] font-semibold tracking-tight text-slate-100">
-          {name ? `${name}'s notebook` : "Your notebook"}
-        </h1>
-        <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-slate-500">
-          Your academic record, the paths you&rsquo;ve explored, and why Fork says what it
-          says — so you can walk into your advisor&rsquo;s office already knowing the
-          questions to ask.
-        </p>
+      {isDemo && <DemoBanner />}
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-tight text-slate-100">
+            {name ? `${name}'s notebook` : "Your notebook"}
+          </h1>
+          <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-slate-500">
+            Your academic record, the paths you&rsquo;ve explored, and why Fork says what it
+            says — so you can walk into your advisor&rsquo;s office already knowing the
+            questions to ask.
+          </p>
+        </div>
+        <div
+          role="tablist"
+          aria-label="Notebook view"
+          className="flex gap-1 rounded-xl border border-white/[0.07] bg-white/[0.02] p-1"
+        >
+          {(["notebook", "map"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => choose(v)}
+              className={`rounded-lg px-3 py-1.5 text-[12.5px] font-medium transition ${
+                view === v ? "bg-cyan-400/10 text-cyan-300" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {v === "notebook" ? "Notebook" : "Brain map"}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {view === "map" ? (
+        <BrainMap notebook={notebook} />
+      ) : (
+      <>
       {!notebook.has_record && <StartHere />}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -60,7 +106,39 @@ export default function NotebookHome({
           <ProvenanceLegend />
         </aside>
       </div>
+      </>
+      )}
     </main>
+    </ReadOnlyContext.Provider>
+  );
+}
+
+function DemoBanner() {
+  return (
+    <div
+      role="note"
+      className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/25 bg-amber-300/[0.06] px-4 py-3"
+    >
+      <p className="text-[12.5px] leading-relaxed text-amber-100/90">
+        <span className="font-semibold">Demo notebook.</span> Jordan is a fictional student and
+        every document here is made up. The comparisons are real: Fork calculated them from
+        these figures and public data. Nothing can be changed.
+      </p>
+      <button
+        type="button"
+        onClick={async () => {
+          // Leave the demo, then land on sign-up rather than back in it.
+          try {
+            await logout();
+          } finally {
+            window.location.assign("/?create=1");
+          }
+        }}
+        className="shrink-0 rounded-lg bg-cyan-500/90 px-3 py-1.5 text-[12px] font-semibold text-slate-950 hover:bg-cyan-400"
+      >
+        Make your own
+      </button>
+    </div>
   );
 }
 

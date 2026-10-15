@@ -57,7 +57,13 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def start_session(db: Session, student: Student, response: Response) -> None:
+#: A demo visit is a look around, not a stay.
+DEMO_SESSION_LIFETIME = timedelta(hours=2)
+
+
+def start_session(
+    db: Session, student: Student, response: Response, lifetime: timedelta = SESSION_LIFETIME
+) -> None:
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     db.add(
@@ -66,13 +72,13 @@ def start_session(db: Session, student: Student, response: Response) -> None:
             token_hash=hash_token(token),
             created_at=now,
             last_seen_at=now,
-            expires_at=now + SESSION_LIFETIME,
+            expires_at=now + lifetime,
         )
     )
     response.set_cookie(
         COOKIE_NAME,
         token,
-        max_age=int(SESSION_LIFETIME.total_seconds()),
+        max_age=int(lifetime.total_seconds()),
         httponly=True,
         secure=_cookie_secure(),
         samesite="lax",
@@ -81,7 +87,7 @@ def start_session(db: Session, student: Student, response: Response) -> None:
     response.set_cookie(
         HINT_COOKIE_NAME,
         "1",
-        max_age=int(SESSION_LIFETIME.total_seconds()),
+        max_age=int(lifetime.total_seconds()),
         httponly=False,
         secure=_cookie_secure(),
         samesite="lax",
@@ -135,6 +141,25 @@ def current_student(request: Request, db: Session = Depends(get_db)) -> Student:
     student = db.get(Student, session.student_id)
     if student is None:
         raise _not_signed_in()
+    return student
+
+
+def require_writable(student: Student = Depends(current_student)) -> Student:
+    """Refuse changes to the shared demo notebook.
+
+    Applied alongside the CSRF check on every state-changing notebook and
+    account route. FastAPI resolves current_student once per request, so this
+    costs no extra lookup.
+    """
+    if student.is_demo:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "status": "demo_read_only",
+                "message": "This is a demo notebook for a fictional student, so it "
+                "can't be changed. Create a free account to build your own.",
+            },
+        )
     return student
 
 
