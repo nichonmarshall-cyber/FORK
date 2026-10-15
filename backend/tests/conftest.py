@@ -73,3 +73,23 @@ def _fresh_answer_cache():
     answer_cache.clear()
     yield
     answer_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _streaming_goes_through_call_model(monkeypatch):
+    """Tests mock `_call_model`. A streamed answer uses `_call_model_streaming`
+    instead, so route it through whatever `_call_model` is at call time and
+    deliver the text in small chunks, the way the provider does.
+
+    test_ask_fork_speed.py covers `_call_model_streaming` itself against a
+    fake client.
+    """
+    import ai.interface as ai
+
+    def fake_stream(system, user_message, max_tokens, on_text, model=None):
+        text = ai._call_model(system, user_message, max_tokens=max_tokens, model=model)
+        for end in range(16, len(text) + 16, 16):
+            on_text(text[:end])
+        return text
+
+    monkeypatch.setattr(ai, "_call_model_streaming", fake_stream)

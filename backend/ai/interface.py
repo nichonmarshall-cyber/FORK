@@ -85,6 +85,63 @@ def _call_model(
     return "".join(block.text for block in response.content if block.type == "text")
 
 
+def _call_model_streaming(
+    system: str,
+    user_message: str,
+    max_tokens: int,
+    on_text,
+    model: str | None = None,
+) -> str:
+    """_call_model, but hands the text to `on_text` as it arrives.
+
+    Used only when someone is waiting on a streamed answer (see
+    _grounded_structured_explanation). Returns the full text, exactly as
+    _call_model would, so every check after it is unchanged.
+    """
+    client = _get_client()
+    parts: list[str] = []
+    with client.messages.stream(
+        model=model or EXPLANATION_MODEL,
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        for text in stream.text_stream:
+            parts.append(text)
+            on_text("".join(parts))
+    return "".join(parts)
+
+
+_DIRECT_ANSWER_START = re.compile(r'"direct_answer"\s*:\s*"')
+
+
+def _complete_direct_answer(buffer: str) -> str | None:
+    """The direct_answer string, once the model has finished writing it.
+
+    Reads a JSON prefix that's still arriving: finds the field, then scans
+    for its closing quote, honouring escapes. Returns None until the whole
+    string is there -- never a half-written sentence.
+    """
+    match = _DIRECT_ANSWER_START.search(buffer)
+    if match is None:
+        return None
+    i = match.end()
+    escaped = False
+    while i < len(buffer):
+        ch = buffer[i]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            try:
+                return json.loads(buffer[match.end() - 1 : i + 1])
+            except ValueError:
+                return None
+        i += 1
+    return None
+
+
 EXTRACTION_SYSTEM_PROMPT = """You extract structured data from a student's \
 message about changing their college major. You do not calculate anything, \
 you do not estimate anything, and you do not recommend anything. You only \
@@ -565,6 +622,18 @@ def _has_invented_relationship(text: str, allowlist: set[str]) -> bool:
     return False
 
 
+def _direct_answer_passes_checks(
+    text: str, allowlist: set[str], active_option_count: int | None
+) -> bool:
+    """The early one-line answer gets every check the full answer gets."""
+    return (
+        bool(text.strip())
+        and _all_numbers_grounded(text, allowlist)
+        and not _has_invented_relationship(text, allowlist)
+        and _counts_alternatives_correctly(text, active_option_count)
+    )
+
+
 def _grounded_structured_explanation(
     system: str,
     user_message: str,
@@ -617,7 +686,28 @@ def _grounded_structured_explanation(
         """
         try:
             with progress.timed("explain"):
-                raw = _call_model(sys_prompt, user_message, max_tokens=900)
+                send_partial = progress.partial_listener()
+                if send_partial is None:
+                    raw = _call_model(sys_prompt, user_message, max_tokens=900)
+                else:
+                    sent = False
+
+                    def on_text(buffer: str) -> None:
+                        # The one-line answer goes out as soon as it's
+                        # complete AND passes the same checks the full
+                        # answer must pass. Anything that fails is simply
+                        # not shown early; the full answer decides.
+                        nonlocal sent
+                        if sent:
+                            return
+                        direct = _complete_direct_answer(buffer)
+                        if direct is None:
+                            return
+                        sent = True
+                        if _direct_answer_passes_checks(direct, allowlist, active_option_count):
+                            send_partial({"direct_answer": direct})
+
+                    raw = _call_model_streaming(sys_prompt, user_message, 900, on_text)
         except Exception as e:
             # NOT a grounding failure. Retrying with a stricter prompt
             # can't fix a provider outage, and mislabeling it hides the

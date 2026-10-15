@@ -844,8 +844,10 @@ def extract_multi_comparison(request: ExtractComparisonRequest):
 # Same answers as the JSON endpoints above, by calling them. The difference
 # is what the student sees while waiting: each real stage the AI layer
 # reaches (understanding, writing, checking, rewriting) is sent as it
-# happens, then the finished, already-verified answer. Nothing unverified
-# is ever streamed -- the answer arrives whole, after the number checks.
+# happens, then the finished, already-verified answer. The one-line direct
+# answer may arrive first, as a "partial" event -- but only once it has
+# passed the same number checks the full answer must pass. Nothing
+# unverified is ever streamed.
 
 
 def _stream_turn(handler, request):
@@ -862,6 +864,7 @@ def _stream_turn(handler, request):
 
     def run():
         progress.listen(lambda stage: events.put(("stage", stage)))
+        progress.listen_partial(lambda part: events.put(("partial", part)))
         try:
             events.put(("result", handler(request, Response())))
         except HTTPException as e:

@@ -26,6 +26,9 @@ REWRITING = "rewriting"
 _listener: contextvars.ContextVar[Callable[[str], None] | None] = contextvars.ContextVar(
     "fork_progress_listener", default=None
 )
+_partial: contextvars.ContextVar[Callable[[dict], None] | None] = contextvars.ContextVar(
+    "fork_partial_listener", default=None
+)
 _timings: contextvars.ContextVar[list[tuple[str, float]] | None] = contextvars.ContextVar(
     "fork_ai_timings", default=None
 )
@@ -39,6 +42,16 @@ def report(stage: str) -> None:
 
 def listen(callback: Callable[[str], None]) -> contextvars.Token:
     return _listener.set(callback)
+
+
+def listen_partial(callback: Callable[[dict], None]) -> contextvars.Token:
+    """Receive an early, already-checked part of an answer -- currently the
+    one-line direct answer -- before the rest is written."""
+    return _partial.set(callback)
+
+
+def partial_listener() -> Callable[[dict], None] | None:
+    return _partial.get()
 
 
 def start_timing() -> contextvars.Token:

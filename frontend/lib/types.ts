@@ -356,11 +356,23 @@ export class ApiError extends Error {
  * as it happens (see backend/ai/progress.py); never guessed from time. */
 export type AskStage = "received" | "understanding" | "writing" | "checking" | "rewriting";
 
+/** The checked part of an answer that can arrive before the rest. */
+export type AskPartial = { direct_answer: string };
+
+export type AskHandlers = {
+  onStage?: (stage: AskStage) => void;
+  onPartial?: (partial: AskPartial) => void;
+};
+
 /**
  * POST an Ask Fork turn to its streaming endpoint, reporting each stage
  * to `onStage`, and resolve with the finished answer -- the same object
- * the plain JSON endpoint returns. The answer only ever arrives whole,
- * after the backend has checked its numbers.
+ * the plain JSON endpoint returns.
+ *
+ * `onPartial` may receive the one-line direct answer early, while the rest
+ * is still being written. The backend sends it only after it passes the
+ * same number and relationship checks as the full answer; the finished
+ * answer always replaces it.
  *
  * Falls back to the JSON endpoint when the stream isn't available (an
  * older backend, a proxy that won't stream), so the chat never depends on
@@ -369,7 +381,7 @@ export type AskStage = "received" | "understanding" | "writing" | "checking" | "
 async function postAskTurn(
   path: string,
   body: unknown,
-  onStage?: (stage: AskStage) => void,
+  handlers: AskHandlers = {},
 ): Promise<{ ok: true; data: unknown } | { ok: false; status: number; body: unknown }> {
   const init = {
     method: "POST",
@@ -404,7 +416,8 @@ async function postAskTurn(
       const data = /^data: (.*)$/m.exec(block)?.[1];
       if (!event || data === undefined) continue;
       const parsed = JSON.parse(data);
-      if (event === "stage") onStage?.(parsed as AskStage);
+      if (event === "stage") handlers.onStage?.(parsed as AskStage);
+      else if (event === "partial") handlers.onPartial?.(parsed as AskPartial);
       else if (event === "result") return { ok: true, data: parsed };
       else if (event === "error")
         return { ok: false, status: parsed.status_code ?? 500, body: { detail: parsed.detail } };
@@ -416,11 +429,15 @@ async function postAskTurn(
 
 export async function explainDecision(
   body: ExplainRequest,
-  onStage?: (stage: AskStage) => void,
+  handlers?: AskHandlers | ((stage: AskStage) => void),
 ): Promise<ExplainTurnResponse> {
   let outcome;
   try {
-    outcome = await postAskTurn("/decision-paths/change-major/explain", body, onStage);
+    outcome = await postAskTurn(
+      "/decision-paths/change-major/explain",
+      body,
+      typeof handlers === "function" ? { onStage: handlers } : handlers,
+    );
   } catch (networkError) {
     const parsed = parseApiError({ networkError });
     throw new ApiError(parsed.message, parsed.field);
@@ -599,6 +616,7 @@ export async function askComparison(
     selectedDetailPath?: string | null;
     availableNodes?: AvailableNode[];
     onStage?: (stage: AskStage) => void;
+    onPartial?: (partial: AskPartial) => void;
   },
 ): Promise<ComparisonAskResponse> {
   let outcome;
@@ -611,7 +629,7 @@ export async function askComparison(
         selected_detail_path: options?.selectedDetailPath ?? undefined,
         available_nodes: options?.availableNodes ?? [],
       },
-      options?.onStage,
+      { onStage: options?.onStage, onPartial: options?.onPartial },
     );
   } catch (networkError) {
     const parsed = parseApiError({ networkError });

@@ -130,6 +130,10 @@ export default function DecisionChat({
   // The real step Ask Fork has reached, streamed from the backend while
   // it works. Null between questions.
   const [stage, setStage] = useState<AskStage | null>(null);
+  // The one-line answer, when the backend sends it ahead of the details.
+  // It has already passed the same checks as the full answer; the full
+  // answer replaces it the moment it arrives.
+  const [early, setEarly] = useState<string | null>(null);
   // Compare One has no session established until its first chat turn --
   // unlike Multi mode, where the session already exists from
   // /comparison/start. Resets naturally on remount (mode switch), same
@@ -183,7 +187,7 @@ export default function DecisionChat({
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, busy]);
+  }, [turns, busy, early]);
 
   /** Applies a backend-computed navigation_target -- purely mechanical,
    * never a judgment call the frontend makes itself. See
@@ -232,6 +236,7 @@ export default function DecisionChat({
 
     setBusy(true);
     setStage(null);
+    setEarly(null);
     setDraft("");
     // The user's message appears immediately, before the request even
     // starts, so the conversation reads as a real exchange rather than a
@@ -251,6 +256,7 @@ export default function DecisionChat({
           selectedDetailPath,
           availableNodes: availableNodesList(),
           onStage: setStage,
+          onPartial: (p) => setEarly(p.direct_answer),
         });
         onComparisonState?.(response.state);
 
@@ -298,7 +304,10 @@ export default function DecisionChat({
         // come from the server recomputing the calculation from
         // calcInputs, never from text a model produced earlier.
       };
-      const response = await explainDecision(req, setStage);
+      const response = await explainDecision(req, {
+        onStage: setStage,
+        onPartial: (p) => setEarly(p.direct_answer),
+      });
       if (response.state.session_id) setPairwiseSessionId(response.state.session_id);
 
       if (response.status === "ai_unavailable") {
@@ -337,6 +346,7 @@ export default function DecisionChat({
     } finally {
       setBusy(false);
       setStage(null);
+      setEarly(null);
     }
   }
 
@@ -394,7 +404,7 @@ export default function DecisionChat({
           ))
         )}
 
-        {busy && <ThinkingIndicator stage={stage} />}
+        {busy && <ThinkingIndicator stage={stage} early={early} />}
       </div>
 
       <div className={`flex flex-wrap gap-1.5 px-3.5 ${isEmpty ? "pb-3" : "pb-2 pt-1"}`}>
@@ -496,16 +506,41 @@ const STAGE_TEXT: Record<AskStage, string> = {
   rewriting: "A figure didn't check out. Rewriting it",
 };
 
+const DETAILS_PENDING_TEXT = "Let me get the details for you…";
+
 /** What Ask Fork is doing right now, from the stages the backend streams,
  * with how long it's been working. Announced politely to screen readers
- * as the stage changes, not every second. */
-function ThinkingIndicator({ stage }: { stage: AskStage | null }) {
+ * as the stage changes, not every second.
+ *
+ * Once the checked one-line answer arrives, it's shown straight away, with
+ * a note that the rest is coming. */
+function ThinkingIndicator({ stage, early }: { stage: AskStage | null; early: string | null }) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
     const started = Date.now();
     const id = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => clearInterval(id);
   }, []);
+  if (early) {
+    return (
+      <div className="flex gap-2.5" data-testid="early-answer">
+        <ForkAvatar />
+        <div className="min-w-0 flex-1 space-y-2 rounded-2xl rounded-tl-sm border border-white/[0.07] bg-white/[0.02] px-3.5 py-3">
+          <p className="text-[13px] font-medium leading-relaxed text-slate-100">{early}</p>
+          <p className="flex items-center gap-2 text-[12px] text-slate-400">
+            <span className="fork-thinking-dots" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </span>
+            <span role="status" aria-live="polite">
+              {DETAILS_PENDING_TEXT}
+            </span>
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex gap-2.5">
       <ForkAvatar />

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DecisionChat from "./DecisionChat";
 
@@ -184,6 +184,29 @@ describe("DecisionChat", () => {
     await waitFor(() =>
       expect(screen.queryByText("Fork is reviewing your decision...")).not.toBeInTheDocument(),
     );
+  });
+
+  it("shows the checked one-line answer early, then replaces it with the full answer", async () => {
+    let resolve: (v: ExplainTurnResponse) => void = () => {};
+    let handlers: { onPartial?: (p: { direct_answer: string }) => void } = {};
+    vi.mocked(explainDecision).mockImplementationOnce((_body, h) => {
+      handlers = (h ?? {}) as typeof handlers;
+      return new Promise((r) => { resolve = r; });
+    });
+    renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Explain the biggest difference" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking");
+
+    act(() => handlers.onPartial?.({ direct_answer: ANSWER.direct_answer }));
+    expect(screen.getByText(ANSWER.direct_answer)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Let me get the details for you");
+
+    resolve(ANSWER);
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    // One answer on screen, not the early copy plus the full one.
+    expect(screen.getAllByText(ANSWER.direct_answer)).toHaveLength(1);
+    expect(screen.getByText("Both majors report under one federal category.")).toBeInTheDocument();
   });
 
   it("shows the required error message with Retry, preserving prior turns", async () => {

@@ -42,6 +42,23 @@ describe("explainDecision over the stream", () => {
     expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toMatch(/\/explain\/stream$/);
   });
 
+  it("hands over an early direct answer before resolving with the full one", async () => {
+    const answer = { status: "complete", state: { session_id: "s" }, direct_answer: "A." };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sse([ev("stage", "writing"), ev("partial", { direct_answer: "A." }), ev("stage", "checking"), ev("result", answer)]),
+      ),
+    );
+    const seen: string[] = [];
+    const result = await explainDecision(BODY, {
+      onStage: (s) => seen.push(`stage:${s}`),
+      onPartial: (p) => seen.push(`partial:${p.direct_answer}`),
+    });
+    expect(seen).toEqual(["stage:writing", "partial:A.", "stage:checking"]);
+    expect(result).toEqual(answer);
+  });
+
   it("turns a streamed error into the usual ApiError", async () => {
     vi.stubGlobal(
       "fetch",

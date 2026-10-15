@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from ai.interface import _call_model_streaming as REAL_STREAMING_CALL
+from ai.interface import _complete_direct_answer
 from main import app
 from tests.test_main import (
     _EXPLAIN_BODY,
@@ -115,6 +117,84 @@ def test_streaming_reports_a_rewrite_when_the_checker_rejects_an_answer():
     stages = re.findall(r'event: stage\ndata: "(\w+)"', res.text)
     assert stages == ["received", "writing", "checking", "rewriting", "checking"]
     assert '"used_fallback": false' in res.text
+    # The rejected answer's headline never reached the student early.
+    assert "123,456,789" not in res.text
+
+
+def _events(text):
+    return [
+        (block.split("\n")[0].removeprefix("event: "), json.loads(block.split("\n")[1].removeprefix("data: ")))
+        for block in text.strip().split("\n\n")
+    ]
+
+
+def test_a_checked_direct_answer_arrives_before_the_details():
+    with patch("ai.interface._call_model", side_effect=_dispatch(_GOOD_EXPLAIN_JSON)):
+        res = client.post("/decision-paths/change-major/explain/stream", json=_EXPLAIN_BODY)
+    events = _events(res.text)
+    kinds = [k for k, _ in events]
+    assert kinds.count("partial") == 1
+    assert kinds.index("partial") < kinds.index("result")
+    # It goes out while the answer is still being written, before checking.
+    assert kinds.index("partial") < events.index(("stage", "checking"))
+    partial = dict(events)["partial"]
+    assert partial == {"direct_answer": json.loads(_GOOD_EXPLAIN_JSON)["direct_answer"]}
+    assert events[-1][1]["direct_answer"] == partial["direct_answer"]
+
+
+def test_an_unchecked_direct_answer_is_never_sent_early():
+    bad = json.dumps({**json.loads(_GOOD_EXPLAIN_JSON), "direct_answer": "It costs $123,456,789 more."})
+    with patch("ai.interface._call_model", side_effect=_dispatch(bad)):
+        res = client.post("/decision-paths/change-major/explain/stream", json=_EXPLAIN_BODY)
+    assert "event: partial" not in res.text
+    assert "event: result" in res.text
+
+
+def test_the_plain_endpoint_does_not_stream_from_the_provider():
+    with patch("ai.interface._call_model_streaming") as streaming, patch(
+        "ai.interface._call_model", side_effect=_dispatch(_GOOD_EXPLAIN_JSON)
+    ):
+        client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    assert streaming.call_count == 0
+
+
+def test_direct_answer_is_read_only_once_its_string_is_complete():
+    assert _complete_direct_answer('{"direct_answer": "Switching co') is None
+    assert _complete_direct_answer('{"direct_answer": "Say \\"hi\\"') is None
+    assert _complete_direct_answer('{"direct_answer": "Say \\"hi\\"."') == 'Say "hi".'
+    assert _complete_direct_answer('```json\n{"direct_answer":"Yes."') == "Yes."
+    assert _complete_direct_answer('{"other": 1') is None
+
+
+def test_streaming_call_hands_over_text_as_it_arrives(monkeypatch):
+    import ai.interface as ai
+
+    seen = {}
+
+    class FakeStream:
+        text_stream = iter(['{"direct', '_answer": "Ye', 's."}'])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakeMessages:
+        def stream(self, **kwargs):
+            seen.update(kwargs)
+            return FakeStream()
+
+    class FakeClient:
+        messages = FakeMessages()
+
+    monkeypatch.setattr(ai, "_client", FakeClient())
+    buffers = []
+    full = REAL_STREAMING_CALL("sys", "user", 900, buffers.append)
+    assert full == '{"direct_answer": "Yes."}'
+    assert buffers == ['{"direct', '{"direct_answer": "Ye', full]
+    assert seen["max_tokens"] == 900
+    assert seen["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_streaming_passes_errors_through():
