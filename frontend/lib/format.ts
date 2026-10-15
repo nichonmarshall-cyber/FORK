@@ -45,3 +45,13 @@ export function hours(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
+
+/** "Oct 14, 2026 at 10:36 PM", in the viewer's own time zone. */
+export function readAtLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `${date} at ${time}`;
+}

@@ -92,12 +92,19 @@ export default function AccountPage() {
               </p>
             </section>
 
-            <DeleteAccount
-              onDeleted={() => {
-                setDeleted(true);
-                setStudent(null);
-              }}
-            />
+            {student.is_demo ? (
+              <p className="text-[12.5px] text-slate-400">
+                This is the shared demo account for a fictional student, so it can&rsquo;t be
+                changed or deleted. Sign out and create your own to keep a real notebook.
+              </p>
+            ) : (
+              <DeleteAccount
+                onDeleted={() => {
+                  setDeleted(true);
+                  setStudent(null);
+                }}
+              />
+            )}
           </>
         )}
       </main>

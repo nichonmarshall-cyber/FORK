@@ -52,6 +52,21 @@ async def _lifespan(_app: FastAPI):
 
     if auto_migrate_enabled():
         upgrade_to_head()
+
+    # Rebuild the read-only demo notebook so it always matches this code
+    # and the current engine. A failure here never stops the app.
+    from notebook.demo import demo_enabled, rebuild_demo
+
+    if demo_enabled():
+        from db.config import session_factory
+
+        try:
+            with session_factory()() as db:
+                rebuild_demo(db)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("fork.demo").exception("Could not build the demo notebook")
     yield
 
 
@@ -995,6 +1010,10 @@ async def upload_unt_audit(
 
     try:
         record = parse_audit_pdf(contents)
+        # The moment of reading is kept; the file is not (see `finally`).
+        from datetime import datetime, timezone
+
+        record.read_at = datetime.now(timezone.utc)
     except UnsupportedDocument as e:
         # A real technical failure: the document couldn't be processed. Distinct
         # from a document that parsed fine but left Fork unable to confirm

@@ -160,6 +160,10 @@ def summarize_audit(record, majors: dict) -> dict:
         "requirements": _requirement_counts(record),
         "degree_hours": _degree_hours(record),
         "program_match": match.model_dump(mode="json"),
+        "gpa": record.gpa.model_dump(mode="json") if record.gpa else None,
+        # When Fork read the upload. The file was discarded right after.
+        "read_at": record.read_at.isoformat() if record.read_at else None,
+        "file_kept": False,
         "warnings": list(record.warnings)[:10],
     }
 
@@ -287,6 +291,17 @@ def _save_current(db, student_id, audit_session, majors):
     if summary["degree_hours"]:
         doc_fact(F.DEGREE_HOURS, summary["degree_hours"])
 
+    # GPA only when the audit's own arithmetic backs it up. A GPA the audit
+    # prints but can't account for is shown in the document summary, not
+    # promoted to a confirmed figure.
+    replaced_gpa = None
+    gpa = record.gpa
+    if gpa is not None and gpa.reconciled:
+        existing_gpa = F.get_fact(db, student_id, F.GPA)
+        if existing_gpa and existing_gpa.provenance == P.STUDENT_REPORTED:
+            replaced_gpa = existing_gpa.value.get("value")
+        doc_fact(F.GPA, gpa.cumulative_gpa)
+
     replaced_major = None
     if program_key:
         existing = F.get_fact(db, student_id, F.CURRENT_MAJOR)
@@ -302,9 +317,12 @@ def _save_current(db, student_id, audit_session, majors):
         timeline.AUDIT_ADDED,
         (
             f"Added your degree audit{f' for {record.program}' if record.program else ''}: "
-            f"{completed} hours completed, {in_progress} in progress."
+            f"{completed} hours completed, {in_progress} in progress"
+            + (f", GPA {gpa.cumulative_gpa:.3f}." if gpa is not None and gpa.reconciled else ".")
         ),
         detail={
+            "gpa": gpa.cumulative_gpa if gpa is not None and gpa.reconciled else None,
+            "replaced_student_reported_gpa": replaced_gpa,
             "completed_hours": completed,
             "in_progress_hours": in_progress,
             "catalog_year": record.catalog_year,

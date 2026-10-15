@@ -212,7 +212,9 @@ def test_unknown_major_is_refused():
 def test_typed_figures_cannot_replace_document_backed_ones():
     client = signed_in("guard@example.edu")
     client.put("/notebook/profile", json={"current_major": "psychology_ba"}, headers=CSRF)
-    save_audit(client, upload_confirmed(client, "unt_audit_standard.txt"))
+    # The synthetic audit states no GPA arithmetic, so GPA stays editable and
+    # the refused batch below can show it wasn't half-applied.
+    save_audit(client, upload_confirmed(client, "synthetic_current_cs.txt"))
 
     # The confirmed audit replaced the typed major, and the timeline says so.
     added = next(e for e in events(client) if e["event_type"] == "audit_added")
@@ -647,3 +649,75 @@ def test_anonymous_compare_flow_still_works_without_an_account():
         },
     )
     assert response.status_code == 200
+
+
+# --- GPA from the degree audit --------------------------------------------
+
+
+def test_reconciled_audit_gpa_becomes_a_document_backed_figure():
+    client = signed_in("gpa@example.edu")
+    client.put("/notebook/profile", json={"gpa": 3.9}, headers=CSRF)
+    document = save_audit(client, upload_confirmed(client, "unt_audit_standard.txt")).json()["document"]
+
+    gpa = client.get("/notebook").json()["snapshot"]["gpa"]
+    assert gpa["value"] == 2.919
+    assert gpa["provenance"] == "confirmed_document"
+    assert gpa["document_id"] == document["id"]
+    assert document["summary"]["gpa"] == {
+        "cumulative_gpa": 2.919,
+        "attempted_hours": 87.0,
+        "quality_points": 254.0,
+        "reconciled": True,
+        "note": None,
+    }
+    added = next(e for e in events(client) if e["event_type"] == "audit_added")
+    assert "GPA 2.919" in added["summary"]
+    assert added["detail"]["replaced_student_reported_gpa"] == 3.9
+    # And it can't be typed over now.
+    assert client.put("/notebook/profile", json={"gpa": 3.5}, headers=CSRF).status_code == 409
+
+
+def test_unreconciled_audit_gpa_is_not_promoted():
+    client = signed_in("gpa2@example.edu")
+    document = save_audit(client, upload_confirmed(client, "synthetic_current_cs.txt")).json()["document"]
+    assert document["summary"]["gpa"]["reconciled"] is False
+    assert client.get("/notebook").json()["snapshot"]["gpa"] is None
+
+
+def test_review_shows_gpa_before_confirmation():
+    from tests.notebook_support import fixture_pdf
+
+    client = new_client()
+    payload = client.post(
+        "/audit/unt/upload",
+        files={"file": ("a.pdf", fixture_pdf("unt_audit_standard.txt"), "application/pdf")},
+    ).json()
+    keys = {c["key"]: c["value"] for c in payload["review"]["checkpoints"]}
+    assert keys["cumulative_gpa"] == "2.919"
+
+
+def test_upload_records_when_it_was_read_and_keeps_no_file(tmp_path, monkeypatch):
+    """The student sees exactly when Fork read their document; the file
+    itself is never written anywhere, even with document storage on."""
+    from datetime import datetime, timedelta, timezone
+
+    from tests.notebook_support import fixture_pdf
+
+    monkeypatch.setenv("FORK_DOCUMENT_STORAGE", "local")
+    monkeypatch.setenv("FORK_DOCUMENT_STORAGE_DIR", str(tmp_path))
+    client = signed_in("readat@example.edu")
+    before = datetime.now(timezone.utc)
+    payload = client.post(
+        "/audit/unt/upload",
+        files={"file": ("a.pdf", fixture_pdf("unt_audit_standard.txt"), "application/pdf")},
+    ).json()
+    read_at = datetime.fromisoformat(payload["review"]["read_at"])
+    assert before - timedelta(seconds=1) <= read_at <= datetime.now(timezone.utc)
+    assert payload["review"]["file_kept"] is False
+
+    client.post(f"/audit/session/{payload['session_id']}/confirm")
+    document = save_audit(client, payload["session_id"]).json()["document"]
+    assert document["summary"]["read_at"] == payload["review"]["read_at"]
+    assert document["summary"]["file_kept"] is False
+    assert document["file"]["stored"] is False
+    assert list(tmp_path.rglob("*")) == []

@@ -239,8 +239,9 @@ def build_next_steps(
                 "id": "add_gpa",
                 "title": "Add your GPA",
                 "detail": (
-                    "Fork doesn't read GPA from your audit yet. Adding it keeps your "
-                    "snapshot complete; it's labelled as your own figure."
+                    "Fork reads your GPA from your UNT degree audit when the audit's "
+                    "own arithmetic checks out. Without one, you can enter it "
+                    "yourself; it's labelled as your own figure."
                 ),
                 "reason": "No GPA in your record.",
                 "action": {"label": "Update your details", "href": "/#record-details"},

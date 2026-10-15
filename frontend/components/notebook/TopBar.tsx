@@ -57,6 +57,11 @@ export default function TopBar({
               >
                 {student.display_name || student.email}
               </Link>
+              {student.is_demo && (
+                <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10.5px] uppercase tracking-[0.1em] text-amber-200">
+                  Demo
+                </span>
+              )}
               {onSignOut && (
                 <button
                   type="button"

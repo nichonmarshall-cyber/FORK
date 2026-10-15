@@ -22,6 +22,7 @@ import {
 } from "@/lib/notebook";
 import ProvenanceBadge from "./ProvenanceBadge";
 import { Field, INPUT } from "./AuthPanel";
+import { useReadOnly } from "./readOnly";
 
 export default function SnapshotCard({
   notebook,
@@ -31,6 +32,7 @@ export default function SnapshotCard({
   onNotebook: (next: Notebook) => void;
 }) {
   const s = notebook.snapshot;
+  const readOnly = useReadOnly();
   // Next steps and the empty state link to #record-details; arriving with
   // that hash opens the form. Read once at mount (this renders after the
   // notebook loads, never during server rendering) and on later hash
@@ -61,15 +63,17 @@ export default function SnapshotCard({
             {s.current_major?.display ? ` · ${s.current_major.display}` : ""}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setEditing((v) => !v)}
-          aria-expanded={editing}
-          aria-controls="record-details"
-          className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-slate-300 hover:border-cyan-400/40 hover:text-cyan-200"
-        >
-          {editing ? "Close" : "Update your details"}
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={() => setEditing((v) => !v)}
+            aria-expanded={editing}
+            aria-controls="record-details"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-slate-300 hover:border-cyan-400/40 hover:text-cyan-200"
+          >
+            {editing ? "Close" : "Update your details"}
+          </button>
+        )}
       </div>
 
       <dl className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -122,7 +126,7 @@ export default function SnapshotCard({
         {s.graduation.message}
       </p>
 
-      {editing && (
+      {editing && !readOnly && (
         <RecordDetailsForm
           snapshot={s}
           onSaved={(next) => {

@@ -121,6 +121,10 @@ def parse_audit_text(text: str) -> StudentAcademicRecord:
             "attempt; worth checking if the count is large."
         )
 
+    from .gpa import parse_gpa
+
+    record.gpa = parse_gpa(lines)
+
     record.reconciliation = reconcile(record.courses, lines)
     if not record.reconciliation.reconciled:
         record.warnings.append(
