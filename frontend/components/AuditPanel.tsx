@@ -1,5 +1,6 @@
 "use client";
 
+import { readAtLabel } from "@/lib/format";
 import { useRef, useState } from "react";
 import {
   AuditSession,
@@ -325,6 +326,11 @@ function ReviewCard({
       <p className="text-[12.5px] leading-relaxed text-slate-200">
         {review.headline}
       </p>
+      {review.read_at && (
+        <p className="text-[11px] text-slate-500">
+          {`Read ${readAtLabel(review.read_at)} · file not kept`}
+        </p>
+      )}
 
       <dl className="space-y-1.5">
         {review.checkpoints.map((c) => (

@@ -65,6 +65,8 @@ class ReviewSummary(BaseModel):
     program: str | None
     catalog_year: str | None
     prepared_at: str | None
+    read_at: str | None = None
+    file_kept: bool = False
     is_what_if: bool
     completed_hours: float
     in_progress_hours: float
@@ -129,6 +131,15 @@ def build_review(record: StudentAcademicRecord) -> ReviewSummary:
             unit="hours",
         )
     )
+    if record.gpa is not None and not record.is_what_if:
+        checkpoints.append(
+            Checkpoint(
+                key="cumulative_gpa",
+                label="Cumulative GPA",
+                value=f"{record.gpa.cumulative_gpa:.3f}",
+                kind="gpa",
+            )
+        )
     checkpoints.append(
         Checkpoint(
             key="in_progress_hours",
@@ -204,6 +215,7 @@ def build_review(record: StudentAcademicRecord) -> ReviewSummary:
         program=record.program,
         catalog_year=record.catalog_year,
         prepared_at=record.audit_prepared_at,
+        read_at=record.read_at.isoformat() if record.read_at else None,
         is_what_if=record.is_what_if,
         completed_hours=record.completed_hours,
         in_progress_hours=record.in_progress_hours,
