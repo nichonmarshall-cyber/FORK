@@ -14,6 +14,7 @@ import {
   NavigationTarget,
   askComparison,
   explainDecision,
+  type AskStage,
 } from "@/lib/types";
 import {
   DecisionInputs,
@@ -126,6 +127,9 @@ export default function DecisionChat({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // The real step Ask Fork has reached, streamed from the backend while
+  // it works. Null between questions.
+  const [stage, setStage] = useState<AskStage | null>(null);
   // Compare One has no session established until its first chat turn --
   // unlike Multi mode, where the session already exists from
   // /comparison/start. Resets naturally on remount (mode switch), same
@@ -227,6 +231,7 @@ export default function DecisionChat({
     if (!comparisonSessionId && calcInputs === null) return;
 
     setBusy(true);
+    setStage(null);
     setDraft("");
     // The user's message appears immediately, before the request even
     // starts, so the conversation reads as a real exchange rather than a
@@ -245,6 +250,7 @@ export default function DecisionChat({
         const response = await askComparison(comparisonSessionId, trimmed, {
           selectedDetailPath,
           availableNodes: availableNodesList(),
+          onStage: setStage,
         });
         onComparisonState?.(response.state);
 
@@ -292,7 +298,7 @@ export default function DecisionChat({
         // come from the server recomputing the calculation from
         // calcInputs, never from text a model produced earlier.
       };
-      const response = await explainDecision(req);
+      const response = await explainDecision(req, setStage);
       if (response.state.session_id) setPairwiseSessionId(response.state.session_id);
 
       if (response.status === "ai_unavailable") {
@@ -330,6 +336,7 @@ export default function DecisionChat({
       ]);
     } finally {
       setBusy(false);
+      setStage(null);
     }
   }
 
@@ -387,14 +394,7 @@ export default function DecisionChat({
           ))
         )}
 
-        {busy && (
-          <div className="flex gap-2.5">
-            <ForkAvatar />
-            <p className="pt-1 text-[12px] italic text-slate-500">
-              Fork is reviewing your decision...
-            </p>
-          </div>
-        )}
+        {busy && <ThinkingIndicator stage={stage} />}
       </div>
 
       <div className={`flex flex-wrap gap-1.5 px-3.5 ${isEmpty ? "pb-3" : "pb-2 pt-1"}`}>
@@ -483,6 +483,54 @@ function TurnView({
         {decisionBoundaryLabel(turn)}
       </span>
       <span className="h-px flex-1 bg-white/[0.08]" />
+    </div>
+  );
+}
+
+
+const STAGE_TEXT: Record<AskStage, string> = {
+  received: "Reading your question",
+  understanding: "Understanding your question",
+  writing: "Writing the explanation",
+  checking: "Checking every number against your calculation",
+  rewriting: "A figure didn't check out. Rewriting it",
+};
+
+/** What Ask Fork is doing right now, from the stages the backend streams,
+ * with how long it's been working. Announced politely to screen readers
+ * as the stage changes, not every second. */
+function ThinkingIndicator({ stage }: { stage: AskStage | null }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const id = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="flex gap-2.5">
+      <ForkAvatar />
+      <div className="pt-1">
+        <p className="flex items-center gap-2 text-[12px] text-slate-400">
+          <span className="fork-thinking-dots" aria-hidden>
+            <span />
+            <span />
+            <span />
+          </span>
+          <span role="status" aria-live="polite">
+            {stage ? STAGE_TEXT[stage] : "Thinking"}
+          </span>
+          {seconds >= 2 && (
+            <span className="tabular-nums text-slate-600" aria-hidden>
+              {seconds}s
+            </span>
+          )}
+        </p>
+        {seconds >= 8 && (
+          <p className="mt-1 text-[11px] text-slate-600">
+            Every number is checked against your calculation before you see it.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

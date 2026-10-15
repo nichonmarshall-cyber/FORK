@@ -14,7 +14,7 @@ load_dotenv()  # load .env so the API key is set before anything below
                # tries to use it
 
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -380,7 +380,7 @@ class ExplainRequest(BaseModel):
 
 
 @app.post("/decision-paths/change-major/explain")
-def explain_change_major(request: ExplainRequest):
+def explain_change_major(request: ExplainRequest, response: Response):
     """
     Answers a follow-up question about a Change Major calculation with a
     structured explanation (direct answer, prioritized key points and
@@ -402,7 +402,44 @@ def explain_change_major(request: ExplainRequest):
     falls back to a deterministic, always-true structured summary rather
     than raising, so there's no separate handling needed for that case.
     """
+    from ai import progress
     from ai.interface import explain_decision
+
+    timing_token = progress.start_timing()
+    try:
+        return _explain_change_major(request, response, explain_decision)
+    finally:
+        _finish_timing(response, "explain", timing_token)
+
+
+def _finish_timing(response: Response, route: str, token) -> None:
+    """Expose per-call model timings in a Server-Timing header (visible in
+    the browser's network panel) and the log."""
+    import logging
+
+    from ai import progress
+
+    entries = progress.timings()
+    progress._timings.reset(token)
+    if entries:
+        response.headers["Server-Timing"] = progress.server_timing_header(entries)
+        logging.getLogger("fork.timing").info(
+            "%s: %s", route, ", ".join(f"{n}={s:.2f}s" for n, s in entries)
+        )
+
+
+def _no_pending_followup(session) -> bool:
+    """A chip only skips the classifier when nothing is waiting on an
+    answer -- otherwise the classifier might have resolved it."""
+    return (
+        getattr(session, "pending_field_request", None) is None
+        and getattr(session, "pending_option_action", None) is None
+    )
+
+
+def _explain_change_major(request: ExplainRequest, response: Response, explain_decision):
+    from ai import answer_cache
+    from conversation.presets import preset_classifier
 
     try:
         reference_data = _load_reference_data(request.institution_id)
@@ -413,6 +450,7 @@ def explain_change_major(request: ExplainRequest):
     }
 
     session = SESSIONS.get_or_create(request.session_id, request.institution_id)
+    preset = preset_classifier(request.question) if _no_pending_followup(session) else None
     turn = handle_pairwise_turn(
         session,
         request.question,
@@ -420,6 +458,7 @@ def explain_change_major(request: ExplainRequest):
         request.prospective_major,
         request.credits_completed,
         valid_majors,
+        classify=preset,
     )
 
     if turn.ai_unavailable:
@@ -471,8 +510,7 @@ def explain_change_major(request: ExplainRequest):
     )
     formatted = _run_change_major_calculation(calc_request)
 
-    result = explain_decision(
-        formatted,
+    explain_args = dict(
         question=request.question,
         node_id=request.selected_node_id,
         node_label=request.selected_node_label,
@@ -480,6 +518,14 @@ def explain_change_major(request: ExplainRequest):
         available_nodes=[n.model_dump() for n in request.available_nodes],
         topic_scope=turn.topic_scope or "broad",
     )
+    cache_key = answer_cache.key_for(formatted=formatted, **explain_args)
+    result = answer_cache.get(cache_key)
+    if result is None:
+        result = explain_decision(formatted, **explain_args)
+        if not result["used_fallback"]:
+            answer_cache.put(cache_key, result)
+    else:
+        response.headers["X-Fork-Answer-Cache"] = "hit"
     explanation = result["explanation"]
     pills, target = compute_pairwise_navigation(explanation.related_node_ids)
     return {
@@ -668,7 +714,7 @@ class ConversationTurnRequest(BaseModel):
 
 
 @app.post("/decision-paths/change-major/comparison/ask")
-def ask_multi_comparison(request: ConversationTurnRequest):
+def ask_multi_comparison(request: ConversationTurnRequest, response: Response):
     """
     One conversational turn against an established comparison.
 
@@ -702,13 +748,22 @@ def ask_multi_comparison(request: ConversationTurnRequest):
     except UnknownInstitution as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    result = handle_turn(
-        session,
-        request.message,
-        reference_data,
-        selected_detail_path=request.selected_detail_path,
-        available_nodes=[n.model_dump() for n in request.available_nodes],
-    )
+    from ai import progress
+    from conversation.presets import preset_classifier
+
+    preset = preset_classifier(request.message) if _no_pending_followup(session) else None
+    timing_token = progress.start_timing()
+    try:
+        result = handle_turn(
+            session,
+            request.message,
+            reference_data,
+            selected_detail_path=request.selected_detail_path,
+            available_nodes=[n.model_dump() for n in request.available_nodes],
+            classify=preset,
+        )
+    finally:
+        _finish_timing(response, "ask", timing_token)
 
     if result.ai_unavailable:
         return {
@@ -782,6 +837,73 @@ def extract_multi_comparison(request: ExtractComparisonRequest):
         "options_missing_transfer_credits": pending,
         "requires_confirmation": True,
     }
+
+
+# --- Streaming Ask Fork --------------------------------------------------
+#
+# Same answers as the JSON endpoints above, by calling them. The difference
+# is what the student sees while waiting: each real stage the AI layer
+# reaches (understanding, writing, checking, rewriting) is sent as it
+# happens, then the finished, already-verified answer. Nothing unverified
+# is ever streamed -- the answer arrives whole, after the number checks.
+
+
+def _stream_turn(handler, request):
+    import contextvars
+    import json as _json
+    import queue
+    import threading
+
+    from fastapi.responses import StreamingResponse
+
+    from ai import progress
+
+    events: "queue.Queue[tuple[str, object] | None]" = queue.Queue()
+
+    def run():
+        progress.listen(lambda stage: events.put(("stage", stage)))
+        try:
+            events.put(("result", handler(request, Response())))
+        except HTTPException as e:
+            events.put(("error", {"status_code": e.status_code, "detail": e.detail}))
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("fork.stream").exception("streamed turn failed")
+            events.put(("error", {"status_code": 500, "detail": "Something went wrong."}))
+        finally:
+            events.put(None)
+
+    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+
+    def body():
+        # Sent immediately, so the browser shows life before the first model
+        # call returns -- and proxies flush the connection open.
+        yield "event: stage\ndata: \"received\"\n\n"
+        while True:
+            item = events.get()
+            if item is None:
+                return
+            kind, data = item
+            yield f"event: {kind}\ndata: {_json.dumps(data, default=str)}\n\n"
+
+    return StreamingResponse(
+        body(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/decision-paths/change-major/explain/stream")
+def explain_change_major_stream(request: ExplainRequest):
+    """/explain, with progress. See _stream_turn."""
+    return _stream_turn(explain_change_major, request)
+
+
+@app.post("/decision-paths/change-major/comparison/ask/stream")
+def ask_multi_comparison_stream(request: ConversationTurnRequest):
+    """/comparison/ask, with progress. See _stream_turn."""
+    return _stream_turn(ask_multi_comparison, request)
 
 
 MAX_AUDIT_BYTES = 5 * 1024 * 1024  # 5 MB; real audits are a few hundred KB

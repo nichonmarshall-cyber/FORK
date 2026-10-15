@@ -289,8 +289,11 @@ def test_explain_reports_ai_unavailable_when_the_provider_is_down_for_intent_cla
     deterministic-fallback explanation. Never guess an intent, never fall
     back to keyword matching (there is none), never attempt to explain
     without first understanding what was asked."""
+    # A typed question: the suggestion chips skip classification (see
+    # test_a_chip_still_answers_when_the_provider_is_down below).
+    typed = {**_EXPLAIN_BODY, "question": "how much more would switching cost me?"}
     with patch("ai.interface._call_model", side_effect=_fail_everything):
-        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+        res = client.post("/decision-paths/change-major/explain", json=typed)
     assert res.status_code == 200
     data = res.json()
     assert data["status"] == "ai_unavailable"
@@ -388,3 +391,16 @@ def test_transferable_source_defaults_to_student_reported():
     switching = res.json()["comparison"]["switching"]["line_items"]
     transferable = next(i for i in switching if "transfer" in i["label"].lower())
     assert "student-reported" in transferable["source"].lower()
+
+def test_a_chip_still_answers_when_the_provider_is_down():
+    """A suggestion chip's topic is known without asking a model, so an
+    outage gets the deterministic, always-true summary rather than
+    "unavailable"."""
+    with patch("ai.interface._call_model", side_effect=_fail_everything) as mock_call:
+        res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
+    data = res.json()
+    assert data["status"] == "complete"
+    assert data["used_fallback"] is True
+    # Exactly one attempt: no classifier call for a chip, and no app-level
+    # retry after a provider failure (the SDK already retried).
+    assert mock_call.call_count == 1

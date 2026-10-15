@@ -352,28 +352,84 @@ export class ApiError extends Error {
   }
 }
 
+/** A real step Ask Fork has reached while answering. Sent by the backend
+ * as it happens (see backend/ai/progress.py); never guessed from time. */
+export type AskStage = "received" | "understanding" | "writing" | "checking" | "rewriting";
+
+/**
+ * POST an Ask Fork turn to its streaming endpoint, reporting each stage
+ * to `onStage`, and resolve with the finished answer -- the same object
+ * the plain JSON endpoint returns. The answer only ever arrives whole,
+ * after the backend has checked its numbers.
+ *
+ * Falls back to the JSON endpoint when the stream isn't available (an
+ * older backend, a proxy that won't stream), so the chat never depends on
+ * streaming to work.
+ */
+async function postAskTurn(
+  path: string,
+  body: unknown,
+  onStage?: (stage: AskStage) => void,
+): Promise<{ ok: true; data: unknown } | { ok: false; status: number; body: unknown }> {
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  };
+  let res = await fetch(`${API_BASE}${path}/stream`, init);
+  if (res.status === 404 || res.status === 405) {
+    const text = await res.clone().text().catch(() => "");
+    // A 404 from the route itself (no stream endpoint) vs. a 404 the turn
+    // produced (inside the stream, never as the HTTP status) -- the latter
+    // can't happen here, so any 404/405 means "no such endpoint".
+    if (!text.includes("event:")) res = await fetch(`${API_BASE}${path}`, init);
+  }
+  const type = res.headers?.get?.("content-type") ?? "";
+  if (!type.includes("text/event-stream") || !res.body) {
+    if (!res.ok) return { ok: false, status: res.status, body: await res.json().catch(() => null) };
+    return { ok: true, data: await res.json() };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      const event = /^event: (.*)$/m.exec(block)?.[1];
+      const data = /^data: (.*)$/m.exec(block)?.[1];
+      if (!event || data === undefined) continue;
+      const parsed = JSON.parse(data);
+      if (event === "stage") onStage?.(parsed as AskStage);
+      else if (event === "result") return { ok: true, data: parsed };
+      else if (event === "error")
+        return { ok: false, status: parsed.status_code ?? 500, body: { detail: parsed.detail } };
+    }
+    if (done) break;
+  }
+  return { ok: false, status: 502, body: null };
+}
+
 export async function explainDecision(
   body: ExplainRequest,
+  onStage?: (stage: AskStage) => void,
 ): Promise<ExplainTurnResponse> {
-  let res: Response;
+  let outcome;
   try {
-    res = await fetch(`${API_BASE}/decision-paths/change-major/explain`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    outcome = await postAskTurn("/decision-paths/change-major/explain", body, onStage);
   } catch (networkError) {
     const parsed = parseApiError({ networkError });
     throw new ApiError(parsed.message, parsed.field);
   }
-
-  if (!res.ok) {
-    const parsedBody = await res.json().catch(() => null);
-    const parsed = parseApiError({ status: res.status, body: parsedBody });
+  if (!outcome.ok) {
+    const parsed = parseApiError({ status: outcome.status, body: outcome.body });
     throw new ApiError(parsed.message, parsed.field);
   }
-
-  return res.json();
+  return outcome.data as ExplainTurnResponse;
 }
 
 /** Find a line item by a distinctive fragment of its label. */
@@ -542,24 +598,28 @@ export async function askComparison(
      * never affects active_options. */
     selectedDetailPath?: string | null;
     availableNodes?: AvailableNode[];
+    onStage?: (stage: AskStage) => void;
   },
 ): Promise<ComparisonAskResponse> {
-  let res: Response;
+  let outcome;
   try {
-    res = await fetch(`${API_BASE}/decision-paths/change-major/comparison/ask`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    outcome = await postAskTurn(
+      "/decision-paths/change-major/comparison/ask",
+      {
         session_id: sessionId,
         message,
         selected_detail_path: options?.selectedDetailPath ?? undefined,
         available_nodes: options?.availableNodes ?? [],
-      }),
-    });
+      },
+      options?.onStage,
+    );
   } catch (networkError) {
     const parsed = parseApiError({ networkError });
     throw new ApiError(parsed.message, parsed.field);
   }
+  const res = outcome.ok
+    ? { ok: true as const, status: 200 }
+    : { ok: false as const, status: outcome.status };
 
   if (!res.ok) {
     // 404 here specifically means the session is gone -- sessions live in
@@ -571,10 +631,9 @@ export async function askComparison(
         "That comparison isn't available any more. Set it up again to continue.",
       );
     }
-    const parsedBody = await res.json().catch(() => null);
-    const parsed = parseApiError({ status: res.status, body: parsedBody });
+    const parsed = parseApiError({ status: res.status, body: outcome.ok ? null : outcome.body });
     throw new ApiError(parsed.message, parsed.field);
   }
 
-  return res.json();
+  return (outcome as { ok: true; data: unknown }).data as ComparisonAskResponse;
 }

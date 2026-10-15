@@ -63,3 +63,13 @@ def notebook_db(monkeypatch, tmp_path):
     academic_sessions.clear()
     yield engine
     Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_answer_cache():
+    """Each test sees Ask Fork with no remembered answers."""
+    from ai import answer_cache
+
+    answer_cache.clear()
+    yield
+    answer_cache.clear()

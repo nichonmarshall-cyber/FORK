@@ -176,7 +176,7 @@ describe("DecisionChat", () => {
     await waitFor(() => expect(screen.getByText("First answer.")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Compare the career outlook" }));
-    expect(screen.getByText("Fork is reviewing your decision...")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking");
     // Prior conversation stays on screen while loading.
     expect(screen.getByText("First answer.")).toBeInTheDocument();
 

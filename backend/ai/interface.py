@@ -27,12 +27,21 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "claude-sonnet-4-6"
 
-# Kept as two names, currently pointing at the same model, so the intent
-# classifier and the explanation writer can move to different models later
-# without touching call sites -- see ai/interface.py's module docstring
-# addition below.
-INTENT_MODEL = _MODEL
-EXPLANATION_MODEL = _MODEL
+# Kept as two names so the intent classifier and the explanation writer can
+# run on different models. Both default to the same one; FORK_INTENT_MODEL
+# and FORK_EXPLANATION_MODEL override them without a code change, so a
+# faster classifier can be benchmarked (scripts/bench_ask_fork.py) before
+# it becomes the default.
+INTENT_MODEL = os.environ.get("FORK_INTENT_MODEL", _MODEL)
+EXPLANATION_MODEL = os.environ.get("FORK_EXPLANATION_MODEL", _MODEL)
+
+#: Seconds to wait for the model before giving up and answering from the
+#: deterministic fallback. The SDK's own default is ten minutes, which a
+#: student waiting on a chat bubble experiences as "broken".
+AI_TIMEOUT_SECONDS = float(os.environ.get("FORK_AI_TIMEOUT", "30"))
+#: The SDK retries rate limits, overloads and connection errors itself,
+#: with backoff. One retry there; the app does not add its own on top.
+AI_MAX_RETRIES = int(os.environ.get("FORK_AI_MAX_RETRIES", "1"))
 
 _client = None
 
@@ -46,20 +55,31 @@ def _get_client() -> anthropic.Anthropic:
                 "ANTHROPIC_API_KEY is not set. Export it before running the "
                 "server: export ANTHROPIC_API_KEY=sk-ant-..."
             )
-        _client = anthropic.Anthropic(api_key=api_key)
+        _client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=anthropic.Timeout(AI_TIMEOUT_SECONDS, connect=5.0),
+            max_retries=AI_MAX_RETRIES,
+        )
     return _client
 
 
 def _call_model(
-    system: str, user_message: str, max_tokens: int = 1024, model: str = EXPLANATION_MODEL
+    system: str, user_message: str, max_tokens: int = 1024, model: str | None = None
 ) -> str:
     """Every LLM call goes through here, so switching providers means
-    changing this one function."""
+    changing this one function.
+
+    The system prompt is marked cacheable. Fork's system prompts are long
+    and identical across students, so after the first request the provider
+    reads them from cache: a shorter wait before the first token, and a
+    lower bill. Prompts below the provider's minimum cacheable size are
+    simply not cached; nothing breaks.
+    """
     client = _get_client()
     response = client.messages.create(
-        model=model,
+        model=model or EXPLANATION_MODEL,
         max_tokens=max_tokens,
-        system=system,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_message}],
     )
     return "".join(block.text for block in response.content if block.type == "text")
@@ -596,7 +616,8 @@ def _grounded_structured_explanation(
         completely different fixes.
         """
         try:
-            raw = _call_model(sys_prompt, user_message, max_tokens=900)
+            with progress.timed("explain"):
+                raw = _call_model(sys_prompt, user_message, max_tokens=900)
         except Exception as e:
             # NOT a grounding failure. Retrying with a stricter prompt
             # can't fix a provider outage, and mislabeling it hides the
@@ -606,6 +627,7 @@ def _grounded_structured_explanation(
                 type(e).__name__, e,
             )
             return None, "provider"
+        progress.report(progress.CHECKING)
         explanation = _parse_structured_explanation(raw)
         if explanation is None:
             logger.warning("explanation attempt failed: response did not parse as valid JSON")
@@ -640,10 +662,21 @@ def _grounded_structured_explanation(
         )
         return explanation, ""
 
+    from . import progress
+
+    progress.report(progress.WRITING)
     first, failure = _attempt(system)
     if first is not None:
         return {"explanation": first, "used_fallback": False}
 
+    if failure == "provider":
+        # The SDK has already retried this call with backoff. A second
+        # attempt here would only double the student's wait before the
+        # same deterministic answer they'd get now.
+        logger.warning("falling back to deterministic explanation (first=provider)")
+        return {"explanation": fallback(formatted_result), "used_fallback": True}
+
+    progress.report(progress.REWRITING)
     retry_suffix = RELATIONSHIP_RETRY_SUFFIX if failure == "relationship" else STRUCTURED_RETRY_SUFFIX
     second, second_failure = _attempt(system + retry_suffix)
     if second is not None:
@@ -1363,14 +1396,21 @@ def classify_intent(
         }
     )
 
+    from . import progress
+
+    provider_failed = False
+
     def _attempt(sys_prompt: str) -> ConversationIntent | None:
+        nonlocal provider_failed
         try:
-            raw = _call_model(sys_prompt, user_message, max_tokens=500, model=INTENT_MODEL)
+            with progress.timed("intent"):
+                raw = _call_model(sys_prompt, user_message, max_tokens=500, model=INTENT_MODEL)
         except Exception as e:
             logger.warning(
                 "intent classification failed: provider error (%s): %s",
                 type(e).__name__, e,
             )
+            provider_failed = True
             return None
         data = _parse_model_json(raw)
         if data is None:
@@ -1382,8 +1422,12 @@ def classify_intent(
             logger.warning("intent classification failed: response did not match schema")
             return None
 
+    progress.report(progress.UNDERSTANDING)
     intent = _attempt(system)
-    if intent is None:
+    # Retry only a response that came back malformed. A provider failure
+    # was already retried by the SDK; asking again would just make the
+    # student wait twice for "temporarily unavailable".
+    if intent is None and not provider_failed:
         intent = _attempt(system + INTENT_RETRY_SUFFIX)
     if intent is None:
         return None

@@ -158,3 +158,31 @@ Tuition is projected by full-time **semester**, not by multiplying every credit 
 **Original-file storage in production** is not configured by this release. `local` writes to the server's disk, which on Render is wiped on every deploy and isn't encrypted at rest, so it must not be used there. A production object store with encryption at rest needs its own backend in `notebook/storage.py`; until then leave `FORK_DOCUMENT_STORAGE` unset and the app tells students their original files aren't kept. Everything Fork reads from a confirmed audit is stored in the database either way.
 
 **Retention:** a notebook is kept until the student deletes their account, which removes every row and stored file belonging to it.
+
+
+## Ask Fork speed
+
+Each question makes one model call for a suggestion chip, two for a typed
+question (understand it, then explain it), plus one rewrite when the number
+checker rejects an answer. The chat streams which of those steps is running.
+Identical questions on an identical calculation are answered from memory.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FORK_AI_TIMEOUT` | `30` | Seconds to wait for the model before answering from the deterministic fallback. |
+| `FORK_AI_MAX_RETRIES` | `1` | Provider-level retries for rate limits and outages. The app adds none of its own. |
+| `FORK_INTENT_MODEL` | `claude-sonnet-4-6` | Model that understands the question. A smaller model is the cheapest speedup; benchmark it first. |
+| `FORK_EXPLANATION_MODEL` | `claude-sonnet-4-6` | Model that writes the explanation. |
+
+Measure with your key (Windows PowerShell):
+
+```powershell
+cd backend
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+py scripts/bench_ask_fork.py --repeat 2
+py scripts/bench_ask_fork.py --intent-model claude-haiku-4-5
+```
+
+Each line shows the total wait and every model call inside it. The same
+breakdown is in the `Server-Timing` header of every Ask Fork response, so
+it's visible in the browser's network panel too.
