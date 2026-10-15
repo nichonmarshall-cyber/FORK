@@ -11,7 +11,7 @@
 
 import Link from "next/link";
 import { useId, useRef, useState } from "react";
-import { hours, shortDate } from "@/lib/format";
+import { hours, readAtLabel, shortDate } from "@/lib/format";
 import { majorLabel } from "@/lib/majors";
 import { ApiError } from "@/lib/types";
 import {
@@ -25,6 +25,7 @@ import {
 } from "@/lib/notebook";
 import ProvenanceBadge from "./ProvenanceBadge";
 import { Field, INPUT } from "./AuthPanel";
+import { useReadOnly } from "./readOnly";
 
 const FACT_NAMES: Record<string, string> = {
   credits_completed: "Credits completed",
@@ -45,6 +46,7 @@ export default function RecordSection({
   onNotebook: (next: Notebook) => void;
 }) {
   const [adding, setAdding] = useState(false);
+  const readOnly = useReadOnly();
   const current = notebook.documents.filter((d) => d.status !== "superseded");
   const older = notebook.documents.filter((d) => d.status === "superseded");
 
@@ -77,7 +79,7 @@ export default function RecordSection({
         </ul>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      {!readOnly && <div className="mt-4 flex flex-wrap gap-2">
         <Link
           href="/compare?panel=audit"
           className="rounded-lg bg-cyan-500/90 px-3 py-1.5 text-[12.5px] font-semibold text-slate-950 hover:bg-cyan-400"
@@ -92,7 +94,7 @@ export default function RecordSection({
         >
           {adding ? "Cancel" : "Record another document"}
         </button>
-      </div>
+      </div>}
 
       {adding && (
         <RecordDocumentForm
@@ -137,6 +139,7 @@ function DocumentItem({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const readOnly = useReadOnly();
 
   async function remove() {
     setBusy(true);
@@ -204,12 +207,18 @@ function DocumentItem({
         )}
       </dl>
 
+      {d.read_by_fork && summary.read_at && (
+        <p className="mt-2 text-[11.5px] text-slate-500">
+          {`Read by Fork ${readAtLabel(summary.read_at)} · the file wasn’t kept`}
+        </p>
+      )}
       {d.read_by_fork && summary.completed_hours !== undefined && (
         <p className="mt-2 text-[12px] text-slate-400">
           Fork read {hours(summary.completed_hours)} completed and{" "}
           {hours(summary.in_progress_hours)} in-progress hours across {summary.course_count}{" "}
           courses
           {summary.corrected_by_student ? `, with ${summary.corrected_by_student} of your corrections` : ""}
+          {summary.gpa?.reconciled ? `, and a cumulative GPA of ${summary.gpa.cumulative_gpa.toFixed(3)}` : ""}
           .
           {summary.totals_reconciled === false && (
             <span className="text-amber-300/90">
@@ -257,7 +266,7 @@ function DocumentItem({
           >
             Download {d.file.filename ?? "file"}
           </a>
-        ) : d.source === "student_recorded" && storageOn ? (
+        ) : d.source === "student_recorded" && storageOn && !readOnly ? (
           <>
             <input
               ref={fileRef}
@@ -283,10 +292,10 @@ function DocumentItem({
           <span className="text-slate-600">Original file not stored</span>
         )}
 
-        <span className="text-slate-700" aria-hidden>
+        {!readOnly && <span className="text-slate-700" aria-hidden>
           ·
-        </span>
-        {confirming ? (
+        </span>}
+        {readOnly ? null : confirming ? (
           <span className="flex flex-wrap items-center gap-2">
             <span className="text-slate-400">
               {d.linked_facts.length > 0

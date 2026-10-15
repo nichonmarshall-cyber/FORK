@@ -46,6 +46,9 @@ export interface ReviewSummary {
   program: string | null;
   catalog_year: string | null;
   prepared_at: string | null;
+  /** When Fork read the upload (ISO, UTC). The file is discarded after. */
+  read_at?: string | null;
+  file_kept?: boolean;
   is_what_if: boolean;
   completed_hours: number;
   in_progress_hours: number;

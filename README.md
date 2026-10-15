@@ -109,6 +109,16 @@ A signed-in student's home. It keeps their academic record and shows where every
 
 A figure backed by a confirmed document can't be overwritten by a typed one; the student adds a newer document or removes the old one. The compare tool still works without an account.
 
+- **Brain map** — the notebook as an Obsidian-style graph: documents, the figures they established, majors, comparisons, the chosen plan, and optionally every journey event. Click a node to open it with its linked mentions.
+
+**GPA** is read from the UNT degree audit and used only when the audit's own arithmetic holds: grade points divided by attempted hours must give the printed average (UNT truncates to three decimals), and the header GPA must match.
+
+**Read, not kept.** Each upload records the moment Fork read it ("Read Oct 14, 2026 at 10:36 PM"); the file itself is discarded right after parsing.
+
+### Demo notebook
+
+"Try the demo notebook" on the home page opens a read-only notebook for a fictional student, Jordan, with a year of documents, comparisons, a change of mind, and a final plan. The story is made up; every comparison in it is calculated by the real engine when the demo is built. It's rebuilt at each startup, refuses every change, and can be turned off with `FORK_DEMO=false`.
+
 ## Technology Stack
 
 | Layer | Technology |

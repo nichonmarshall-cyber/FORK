@@ -14,7 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from accounts.auth import current_student, require_csrf_header
+from accounts.auth import current_student, require_csrf_header, require_writable
 from data_loading.loader import UnknownInstitution, build_reference_data
 from db.config import get_db
 from db.models import Student
@@ -27,7 +27,7 @@ from . import timeline
 from .storage import StorageUnavailable, get_storage
 
 router = APIRouter(prefix="/notebook", tags=["notebook"])
-mutating = [Depends(require_csrf_header)]
+mutating = [Depends(require_csrf_header), Depends(require_writable)]
 
 
 def _reference(student: Student) -> dict:

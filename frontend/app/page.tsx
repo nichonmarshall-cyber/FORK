@@ -14,7 +14,7 @@ import AuthPanel from "@/components/notebook/AuthPanel";
 import NotebookHome from "@/components/notebook/NotebookHome";
 import TopBar from "@/components/notebook/TopBar";
 import { ApiError } from "@/lib/types";
-import { Notebook, NotSignedIn, Student, getNotebook, logout } from "@/lib/notebook";
+import { Notebook, NotSignedIn, Student, getNotebook, logout, startDemo } from "@/lib/notebook";
 
 type State =
   | { kind: "loading" }
@@ -101,6 +101,27 @@ export default function Home() {
 }
 
 function Welcome({ onSignedIn }: { onSignedIn: () => void }) {
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
+  // Arriving from "Make your own" in the demo opens the sign-up tab.
+  const [initialMode] = useState<"sign_in" | "create">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("create")
+      ? "create"
+      : "sign_in",
+  );
+
+  async function openDemo() {
+    setDemoBusy(true);
+    setDemoError(null);
+    try {
+      await startDemo();
+      onSignedIn();
+    } catch (e) {
+      setDemoError(e instanceof ApiError ? e.message : "The demo isn't available right now.");
+      setDemoBusy(false);
+    }
+  }
+
   return (
     <main className="mx-auto grid max-w-[1100px] grid-cols-1 gap-8 px-4 pb-16 pt-10 lg:grid-cols-[minmax(0,1fr)_400px] lg:pt-16">
       <div>
@@ -128,15 +149,31 @@ function Welcome({ onSignedIn }: { onSignedIn: () => void }) {
             What you added, compared, and decided, in order.
           </Point>
         </ul>
-        <p className="mt-6 text-[13px] text-slate-500">
-          Just want to try it?{" "}
-          <Link href="/compare" className="font-medium text-cyan-300 hover:underline">
-            Compare majors without an account →
+        <div className="mt-7 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={openDemo}
+            disabled={demoBusy}
+            className="rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-2 text-[13px] font-semibold text-cyan-200 hover:bg-cyan-400/15 disabled:opacity-60"
+          >
+            {demoBusy ? "Opening the demo…" : "Try the demo notebook"}
+          </button>
+          <Link href="/compare" className="text-[13px] font-medium text-slate-400 hover:text-cyan-300">
+            or compare majors without an account →
           </Link>
+        </div>
+        <p className="mt-2 text-[11.5px] text-slate-600">
+          The demo is a fictional student&rsquo;s notebook: a year of documents, comparisons, and
+          decisions, including the brain map. Read-only, no sign-up.
         </p>
+        {demoError && (
+          <p role="alert" className="mt-2 text-[12px] text-rose-300">
+            {demoError}
+          </p>
+        )}
       </div>
       <div>
-        <AuthPanel onSignedIn={onSignedIn} />
+        <AuthPanel onSignedIn={onSignedIn} initialMode={initialMode} />
         <p className="mt-3 text-[11.5px] leading-relaxed text-slate-600">
           Fork helps you understand a decision before you make it. It doesn&rsquo;t replace
           your academic advisor, and confirming a document in Fork isn&rsquo;t verification

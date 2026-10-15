@@ -17,6 +17,7 @@ from db.models import TimelineEvent
 NOTEBOOK_STARTED = "notebook_started"
 AUDIT_ADDED = "audit_added"
 WHAT_IF_ADDED = "what_if_added"
+TRANSCRIPT_READ = "transcript_read"
 DOCUMENT_RECORDED = "document_recorded"
 DOCUMENT_FILE_ATTACHED = "document_file_attached"
 DOCUMENT_REMOVED = "document_removed"
@@ -32,6 +33,7 @@ EVENT_TYPES = frozenset(
         NOTEBOOK_STARTED,
         AUDIT_ADDED,
         WHAT_IF_ADDED,
+        TRANSCRIPT_READ,
         DOCUMENT_RECORDED,
         DOCUMENT_FILE_ATTACHED,
         DOCUMENT_REMOVED,

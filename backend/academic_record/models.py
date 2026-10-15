@@ -18,6 +18,8 @@ Two structural rules make the hour totals trustworthy:
      no arrangement of requirement parsing can inflate a total.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field, computed_field
 
 from .enums import (
@@ -241,6 +243,12 @@ class StudentAcademicRecord(BaseModel):
     )
     institution: str = "University of North Texas"
     document_type: str = "unt_degree_audit"
+    read_at: datetime | None = Field(
+        default=None,
+        description="When Fork read the uploaded file (UTC). The file itself "
+                    "is discarded right after; this is the only trace of the "
+                    "upload that's kept.",
+    )
 
     # --- Academic content ---
     courses: list[NormalizedCourse] = Field(default_factory=list)
@@ -251,6 +259,12 @@ class StudentAcademicRecord(BaseModel):
                     "DUPLICATE COURSES. Kept so a student can see their repeat "
                     "history, and so nothing appears to have been dropped. "
                     "Never contributes hours.",
+    )
+
+    gpa: "AuditGpa | None" = Field(
+        default=None,
+        description="Cumulative GPA as the audit states it, with its own "
+                    "arithmetic check. See audit_import/unt/gpa.py.",
     )
 
     # --- Parser diagnostics ---
@@ -286,3 +300,7 @@ class StudentAcademicRecord(BaseModel):
     @property
     def parsed_anything(self) -> bool:
         return bool(self.courses)
+
+from audit_import.unt.gpa import AuditGpa  # noqa: E402
+
+StudentAcademicRecord.model_rebuild()

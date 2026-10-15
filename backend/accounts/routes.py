@@ -22,11 +22,13 @@ from notebook.storage import StorageUnavailable, get_storage
 
 from . import rate_limit
 from .auth import (
+    DEMO_SESSION_LIFETIME,
     clear_cookie,
     client_address,
     current_student,
     end_session,
     require_csrf_header,
+    require_writable,
     start_session,
 )
 from .passwords import burn_equivalent_time, hash_password, verify_password
@@ -90,6 +92,7 @@ def serialize_student(student: Student) -> dict:
         "email": student.email,
         "display_name": student.display_name,
         "institution_id": student.institution_id,
+        "is_demo": bool(student.is_demo),
         "created_at": student.created_at.isoformat() if student.created_at else None,
     }
 
@@ -214,7 +217,34 @@ def me(student: Student = Depends(current_student)):
     return {"student": serialize_student(student)}
 
 
-@router.delete("", dependencies=[Depends(require_csrf_header)])
+@router.post("/demo", dependencies=[Depends(require_csrf_header)])
+def start_demo(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Sign this browser in to the shared, read-only demo notebook.
+
+    The demo student is fictional and its record is rebuilt from
+    notebook/demo.py whenever it's missing. No password exists for it; this
+    route is the only way in, and every change it might attempt is refused.
+    """
+    from notebook.demo import demo_enabled, ensure_demo_student
+
+    if not demo_enabled():
+        raise HTTPException(
+            status_code=404,
+            detail={"status": "demo_disabled", "message": "The demo isn't available here."},
+        )
+    ip = client_address(request)
+    wait = rate_limit.demo_by_ip.retry_after(ip)
+    if wait:
+        raise _too_many(wait)
+    rate_limit.demo_by_ip.hit(ip)
+
+    student = ensure_demo_student(db)
+    start_session(db, student, response, lifetime=DEMO_SESSION_LIFETIME)
+    db.commit()
+    return {"student": serialize_student(student)}
+
+
+@router.delete("", dependencies=[Depends(require_csrf_header), Depends(require_writable)])
 def delete_account(
     body: DeleteAccountBody,
     response: Response,

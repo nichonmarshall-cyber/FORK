@@ -942,7 +942,7 @@ export default function ComparePage() {
               onReverted={handleAuditReverted}
               onCorrected={() => setAuditSession((s) => s)}
             />
-            {student && auditSession && (
+            {student && !student.is_demo && auditSession && (
               <RecordSaveBar session={auditSession} onSaved={refreshRecord} />
             )}
           </div>
@@ -987,7 +987,14 @@ export default function ComparePage() {
                 bad={(displayedResult.summary.annual_salary_delta ?? 0) < 0}
               />
 
-              {student ? (
+              {student?.is_demo ? (
+                <p className="text-[11.5px] text-slate-500">
+                  This is the read-only demo, so comparisons can&rsquo;t be saved.{" "}
+                  <Link href="/" className="text-cyan-300 hover:underline">
+                    Back to the demo notebook
+                  </Link>
+                </p>
+              ) : student ? (
                 <div className="pt-1">
                   {savedForCurrent && saveStatus.kind === "saved" ? (
                     <p role="status" className="text-[12px] text-emerald-300">

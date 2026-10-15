@@ -146,6 +146,7 @@ Tuition is projected by full-time **semester**, not by multiplying every credit 
 |---|---|---|
 | `DATABASE_URL` | backend | Postgres in production. Defaults to `sqlite:///./fork_dev.db`. |
 | `FORK_AUTO_MIGRATE` | backend | `true` by default: migrate to the latest schema at startup. |
+| `FORK_DEMO` | backend | `true` by default: build the read-only demo notebook at startup and allow `POST /account/demo`. |
 | `FORK_COOKIE_SECURE` | backend | `true` by default. Only set `false` for plain-HTTP local development. |
 | `FORK_DOCUMENT_STORAGE` | backend | Unset or `none` (default): original files are not stored. `local`: store them on disk — development only. |
 | `FORK_DOCUMENT_STORAGE_DIR` | backend | Folder for `local` storage. Defaults to `./document_storage` (gitignored). |
