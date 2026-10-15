@@ -66,11 +66,22 @@ export function nextTurnId(prefix: string): string {
   return `${prefix}-${counter}`;
 }
 
+/** The exact inputs of the calculation currently on screen.
+ *
+ * Includes provenance and in-progress hours, not just the four figures:
+ * Ask Fork's /explain recomputes from these, and a recomputation without
+ * them labels a document's figure "Student-reported" and drops the
+ * in-progress hours -- grounding the explanation on a different
+ * calculation from the one the map shows. */
 export interface DecisionInputs {
   current_major: string;
   prospective_major: string;
   credits_completed: number;
   credits_transferable: number;
+  credits_source?: string;
+  credits_transferable_source?: string;
+  credits_source_date?: string;
+  credits_in_progress?: number;
 }
 
 /**

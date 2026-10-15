@@ -343,3 +343,48 @@ def test_explain_never_leaks_raw_errors_regardless_of_failure_mode():
         res = client.post("/decision-paths/change-major/explain", json=_EXPLAIN_BODY)
     assert "some internal detail" not in res.text
     assert "Exception" not in res.text
+
+def test_what_if_provenance_reaches_the_serialized_result():
+    """A confirmed What-If's provenance must survive into the result the
+    Decision Map reads.
+
+    The frontend previously sent credits_source (from the current audit)
+    but never credits_transferable_source, so the backend's
+    "Student-reported" default described a figure that had come from a
+    confirmed What-If audit. Every downstream consumer then read it as an
+    estimate.
+    """
+    what_if_source = "UNT What-If Audit — Psychology, B.S., confirmed by you"
+    body = {
+        **_EXPLAIN_BODY,
+        "credits_source": "UNT Degree Audit, confirmed by you",
+        "credits_transferable_source": what_if_source,
+    }
+    body.pop("question", None)
+    res = client.post("/decision-paths/change-major/calculate", json=body)
+    assert res.status_code == 200, res.text
+
+    switching = res.json()["comparison"]["switching"]["line_items"]
+    transferable = next(i for i in switching if "transfer" in i["label"].lower())
+    assert transferable["source"] == what_if_source
+    assert "student-reported" not in transferable["source"].lower()
+
+    # The current audit's provenance stays on the COMPLETED figure and does
+    # not leak onto the transfer figure -- they come from different
+    # documents and describe different measures.
+    staying = res.json()["comparison"]["staying"]["line_items"]
+    completed = next(i for i in staying if i["label"] == "Credits already completed")
+    assert "degree audit" in completed["source"].lower()
+    assert "what-if" not in completed["source"].lower()
+
+
+def test_transferable_source_defaults_to_student_reported():
+    """Omitting it must keep the old behaviour exactly -- a manual entry is
+    still the student's own estimate."""
+    body = {k: v for k, v in _EXPLAIN_BODY.items() if k != "question"}
+    res = client.post("/decision-paths/change-major/calculate", json=body)
+    assert res.status_code == 200, res.text
+
+    switching = res.json()["comparison"]["switching"]["line_items"]
+    transferable = next(i for i in switching if "transfer" in i["label"].lower())
+    assert "student-reported" in transferable["source"].lower()

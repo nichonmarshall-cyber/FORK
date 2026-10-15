@@ -41,10 +41,6 @@ export default function PathNavigator({
   const total = options.length;
 
   useEffect(() => {
-    if (open) setActiveIndex(position >= 0 ? position : 0);
-  }, [open, position]);
-
-  useEffect(() => {
     if (open) itemRefs.current[activeIndex]?.focus();
   }, [open, activeIndex]);
 
@@ -91,7 +87,12 @@ export default function PathNavigator({
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          // Highlight the path on screen as the popover opens. Done here,
+          // in the event, rather than in an effect reacting to `open`.
+          if (!open) setActiveIndex(position >= 0 ? position : 0);
+          setOpen(!open);
+        }}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`View comparison paths, currently viewing ${displayPosition} of ${total}`}

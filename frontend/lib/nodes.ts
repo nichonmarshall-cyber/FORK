@@ -323,6 +323,32 @@ const idle: ResolvedNode = { state: "idle" };
 
 // --- the map -----------------------------------------------------------
 
+/**
+ * Where a credit figure actually came from.
+ *
+ * Derived from the provenance string the backend attaches to each line
+ * item, which originates in documents/resolution.py — "UNT Degree Audit,
+ * confirmed by you" for a current audit and "UNT What-If Audit — <program>
+ * ... confirmed by you" for a What-If. Everything else, including the
+ * backend's "Student-reported" default, is an estimate.
+ *
+ * Defined once and used by every node that cares, because the previous
+ * arrangement had each resolver sniffing the string itself with slightly
+ * different tests — which is how one node could treat a figure as
+ * document-derived while another called it the student's own guess.
+ */
+export type CreditProvenance = "student" | "current_audit" | "what_if";
+
+export function provenanceOf(source: string | undefined | null): CreditProvenance {
+  const text = (source ?? "").toLowerCase();
+  // Checked before the plain-audit test: a What-If source also contains
+  // the word "audit", so the more specific match has to win.
+  if (text.includes("what-if")) return "what_if";
+  if (text.includes("degree audit")) return "current_audit";
+  return "student";
+}
+
+
 export const NODES: NodeDef[] = [
   {
     id: "root",
@@ -401,17 +427,23 @@ export const NODES: NodeDef[] = [
     resolve: (r) => {
       if (!r) return idle;
       const li = findLineItem(r, "Credits that transfer");
-      // A student's own estimate is not the registrar's answer. Say so.
-      const isEstimate =
-        li?.source.toLowerCase().includes("student-reported") ||
-        li?.source.toLowerCase().includes("estimate");
+      // A student's own estimate is not the registrar's answer. Say so —
+      // but only when it actually IS an estimate. This previously tested
+      // for the literal string "student-reported", which is the backend's
+      // DEFAULT, so a figure that came from a confirmed What-If was
+      // described as the student's own guess whenever the request omitted
+      // its provenance.
+      const provenance = provenanceOf(li?.source);
+      const isEstimate = provenance === "student";
       return {
         state: isEstimate ? "needs_info" : "completed",
         display: li && li.value !== null ? credits(li.value) : undefined,
         lineItem: li,
         reason: isEstimate
           ? "This figure is your own estimate. A what-if degree audit run against the new major would replace it with the registrar's number."
-          : undefined,
+          : provenance === "what_if"
+            ? `This figure comes from your confirmed What-If audit for ${r.summary.prospective_major}, not from an estimate.`
+            : undefined,
         known: [
           `Current major: ${r.summary.current_major}`,
           `Considering: ${r.summary.prospective_major}`,
@@ -435,15 +467,70 @@ export const NODES: NodeDef[] = [
     kind: "leaf",
     parent: "academic",
     question: "What has my registrar actually recorded?",
-    resolve: () => ({
-      state: "needs_info",
-      reason:
-        "Fork can read completed hours straight out of a degree audit PDF, so the number comes from your registrar rather than from memory.",
-      stillNeed: [
-        "Upload your degree audit PDF",
-        "Confirm the hours Fork reads back to you",
-      ],
-    }),
+    // Reads the provenance the calculation was actually performed with.
+    //
+    // This used to be a constant that returned "needs_info" unconditionally
+    // — it took no argument at all — so a student who had uploaded,
+    // reviewed and confirmed both documents was still told to upload a
+    // degree audit, while the numbers on screen came from that very audit.
+    // The document state was never wrong; this node simply never looked at
+    // it.
+    resolve: (r) => {
+      if (!r) return idle;
+
+      const completed = findLineItem(r, "Credits already completed");
+      const transferable = findLineItem(r, "Credits that transfer");
+      const currentAudit = provenanceOf(completed?.source) === "current_audit";
+      const whatIf = provenanceOf(transferable?.source) === "what_if";
+
+      if (!currentAudit && !whatIf) {
+        return {
+          state: "needs_info",
+          reason:
+            "Fork can read completed hours straight out of a degree audit PDF, so the number comes from your registrar rather than from memory.",
+          stillNeed: [
+            "Upload your degree audit PDF",
+            "Confirm the hours Fork reads back to you",
+          ],
+        };
+      }
+
+      const known: string[] = [];
+      if (currentAudit) {
+        known.push(
+          `Current degree audit confirmed — ${completed?.value ?? "—"} completed credits`,
+        );
+        if (completed?.source) known.push(completed.source);
+      }
+      if (whatIf) {
+        known.push(
+          `What-If audit confirmed for ${r.summary.prospective_major} — ${
+            transferable?.value ?? "—"
+          } applicable credits`,
+        );
+        if (transferable?.source) known.push(transferable.source);
+      }
+
+      return {
+        // Only complete once BOTH documents are behind the figures. A
+        // confirmed current audit with a student-estimated transfer number
+        // is genuinely partial, and saying otherwise would overstate what
+        // the registrar has confirmed.
+        state: currentAudit && whatIf ? "completed" : "needs_info",
+        display: completed && completed.value !== null ? credits(completed.value) : undefined,
+        lineItem: completed ?? undefined,
+        known,
+        // Never asks for a document that's already confirmed.
+        stillNeed: whatIf
+          ? undefined
+          : [
+              `A what-if degree audit run against ${r.summary.prospective_major}`,
+            ],
+        reason: whatIf
+          ? undefined
+          : "Your completed hours come from your confirmed degree audit. How many of them apply to the new major is still your own estimate.",
+      };
+    },
   },
   {
     id: "prerequisite_check",
