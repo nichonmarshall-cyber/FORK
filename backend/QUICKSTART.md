@@ -145,13 +145,14 @@ Tuition is projected by full-time **semester**, not by multiplying every credit 
 | Variable | Where | Purpose |
 |---|---|---|
 | `DATABASE_URL` | backend | Postgres in production. Defaults to `sqlite:///./fork_dev.db`. |
+| `FORK_AUTO_MIGRATE` | backend | `true` by default: migrate to the latest schema at startup. |
 | `FORK_COOKIE_SECURE` | backend | `true` by default. Only set `false` for plain-HTTP local development. |
 | `FORK_DOCUMENT_STORAGE` | backend | Unset or `none` (default): original files are not stored. `local`: store them on disk — development only. |
 | `FORK_DOCUMENT_STORAGE_DIR` | backend | Folder for `local` storage. Defaults to `./document_storage` (gitignored). |
 | `NEXT_PUBLIC_API_BASE` | frontend | Already used by the app; also where `/api/fork/*` is proxied. |
 | `FORK_API_ORIGIN` | frontend (optional) | Overrides the proxy target if the frontend server should reach the backend at a different address. |
 
-**Deploying (Render):** add a Postgres database, set `DATABASE_URL` on the web service, and run migrations before the app starts, e.g. a start command of `alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT`. Keep one worker: sign-in rate limits and audit review sessions are per process.
+**Deploying (Render):** add a Postgres database and set `DATABASE_URL` on the web service. The app brings the schema up to date by itself when it starts, so the start command doesn't change. Without `DATABASE_URL` it falls back to SQLite on Render's disk, which is wiped on every deploy, so accounts would be lost; the logs warn about this. Set `FORK_AUTO_MIGRATE=false` if you'd rather run `alembic upgrade head` yourself. Keep one worker: sign-in rate limits and audit review sessions are per process.
 
 **Original-file storage in production** is not configured by this release. `local` writes to the server's disk, which on Render is wiped on every deploy and isn't encrypted at rest, so it must not be used there. A production object store with encryption at rest needs its own backend in `notebook/storage.py`; until then leave `FORK_DOCUMENT_STORAGE` unset and the app tells students their original files aren't kept. Everything Fork reads from a confirmed audit is stored in the database either way.
 

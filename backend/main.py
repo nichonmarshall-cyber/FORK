@@ -7,6 +7,7 @@ generates them from the models below, no extra work needed.
 """
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 load_dotenv()  # load .env so the API key is set before anything below
@@ -42,12 +43,25 @@ from conversation.orchestrator import (
 from conversation.session import SESSIONS
 from audit_import.parser import parse_audit_pdf, propose_engine_inputs
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Create or upgrade the account/notebook tables before serving. Without
+    # this, a deploy whose start command skipped `alembic upgrade head` came
+    # up healthy and then failed every sign-up. See db/migrate.py.
+    from db.migrate import auto_migrate_enabled, upgrade_to_head
+
+    if auto_migrate_enabled():
+        upgrade_to_head()
+    yield
+
+
 app = FastAPI(
     title="Fork API",
     description="Academic and financial decision support for college students. "
                 "The AI never does the math — every number here traces back to a "
                 "deterministic engine and a data source you can go check.",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 # Browsers enforce this, so it decides which sites may call the API using a
