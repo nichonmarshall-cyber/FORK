@@ -8,7 +8,6 @@
  * would be work for no benefit, and a stable layout is easier to read.
  */
 
-import { useMemo } from "react";
 import { BRANCH_COLOR, NODES, NODES_BY_ID, NodeDef, NodeState } from "@/lib/nodes";
 import { CalcResult } from "@/lib/types";
 
@@ -40,6 +39,23 @@ const ICONS: Record<string, string> = {
   check: "M-6 0l4 4 8-9",
 };
 
+// Deterministic starfield — a random one would reshuffle on every render
+// and flicker whenever the result changes. A fixed seed makes it a
+// constant, so it's built once here rather than per component instance.
+const STARS = (() => {
+  let seed = 1337;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  return Array.from({ length: 130 }, () => ({
+    cx: rand() * 1000,
+    cy: rand() * 720,
+    r: rand() * 1.1 + 0.25,
+    o: rand() * 0.5 + 0.08,
+  }));
+})();
+
 interface Props {
   result: CalcResult | null;
   selectedId: string | null;
@@ -49,21 +65,7 @@ interface Props {
 export default function DecisionMap({ result, selectedId, onSelect }: Props) {
   const resolved = new Map(NODES.map((n) => [n.id, n.resolve(result)]));
 
-  // Deterministic starfield — a random one would reshuffle on every render
-  // and flicker whenever the result changes.
-  const stars = useMemo(() => {
-    let seed = 1337;
-    const rand = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed / 2147483648;
-    };
-    return Array.from({ length: 130 }, () => ({
-      cx: rand() * 1000,
-      cy: rand() * 720,
-      r: rand() * 1.1 + 0.25,
-      o: rand() * 0.5 + 0.08,
-    }));
-  }, []);
+  const stars = STARS;
 
   return (
     <svg

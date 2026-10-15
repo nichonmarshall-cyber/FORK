@@ -40,3 +40,26 @@ def audit_pdf() -> bytes:
         y -= 8
     pdf.save()
     return buffer.getvalue()
+
+@pytest.fixture
+def notebook_db(monkeypatch, tmp_path):
+    """A fresh database for each account/notebook test.
+
+    Built from the ORM metadata for speed; test_notebook_migrations.py checks
+    separately that the Alembic migration produces this same schema.
+    """
+    from accounts import rate_limit
+    from db import config
+    from db.models import Base
+    from notebook import documents
+    from session.store import academic_sessions
+
+    monkeypatch.setenv("FORK_COOKIE_SECURE", "false")
+    monkeypatch.delenv("FORK_DOCUMENT_STORAGE", raising=False)
+    engine = config.configure("sqlite://")
+    Base.metadata.create_all(engine)
+    rate_limit.reset_all()
+    documents.reset_claims()
+    academic_sessions.clear()
+    yield engine
+    Base.metadata.drop_all(engine)
