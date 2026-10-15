@@ -19,3 +19,12 @@ Employment_Projections.csv
 # fixture instead.
 *.pdf
 !backend/audit_import/unt/tests/fixtures/*.pdf
+# Local notebook database and development document storage. Real student
+# records; never committed.
+backend/fork_dev.db
+backend/fork_dev.db-*
+backend/document_storage/
+
+# Python bytecode
+__pycache__/
+*.pyc
